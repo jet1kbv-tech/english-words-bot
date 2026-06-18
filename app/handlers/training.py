@@ -22,6 +22,14 @@ def _session(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.user_data.setdefault("training", {})
 
 
+def _weighted_shuffle(words: list) -> list:
+    return sorted(
+        words,
+        key=lambda word: random.random() ** (1 / max(int(word["review_weight"]), 1)),
+        reverse=True,
+    )
+
+
 def _card_direction(session: dict, index: int) -> str:
     directions = session.setdefault("directions", [])
     while len(directions) <= index:
@@ -51,11 +59,11 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, onl
     if user is None or update.effective_message is None:
         return
     db: Database = context.application.bot_data["db"]
-    words = db.list_words(user["id"])
+    words = db.list_review_words(user["id"])
     if not words:
         await update.effective_message.reply_text("Пока нет слов для тренировки. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
         return
-    random.shuffle(words)
+    words = _weighted_shuffle(words)
     context.user_data["training"] = {
         "words": words,
         "directions": [random.choice(CARD_DIRECTIONS) for _ in words],

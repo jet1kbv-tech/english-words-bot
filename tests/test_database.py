@@ -60,6 +60,21 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(selected), 10)
         self.assertEqual(len({word["id"] for word in selected}), 10)
 
+    def test_list_review_words_adds_smart_review_weights(self) -> None:
+        self.db.add_word(self.user["id"], "new", "новое", None, None)
+        self.db.add_word(self.user["id"], "weak", "слабое", None, None)
+        self.db.add_word(self.user["id"], "strong", "сильное", None, None)
+        words = {word["english"]: word for word in self.db.list_words(self.user["id"])}
+        self.db.update_progress(self.user["id"], words["weak"]["id"], remembered=False)
+        self.db.update_progress(self.user["id"], words["strong"]["id"], remembered=True)
+        self.db.update_progress(self.user["id"], words["strong"]["id"], remembered=True)
+
+        review_words = {word["english"]: word for word in self.db.list_review_words(self.user["id"])}
+
+        self.assertEqual(review_words["new"]["review_weight"], 6)
+        self.assertEqual(review_words["weak"]["review_weight"], 5)
+        self.assertEqual(review_words["strong"]["review_weight"], 1)
+
     def test_daily_activity_updates_streak(self) -> None:
         today = date(2026, 6, 18)
         yesterday = today - timedelta(days=1)

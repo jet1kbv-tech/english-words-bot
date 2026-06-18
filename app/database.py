@@ -303,6 +303,27 @@ class Database:
             (owner_user_id,),
         )
 
+    def list_review_words(self, user_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT words.*, users.display_name AS owner_name,
+                   word_progress.score, word_progress.times_seen,
+                   word_progress.times_remembered, word_progress.times_forgotten,
+                   word_progress.last_reviewed_at,
+                   CASE
+                       WHEN word_progress.id IS NULL THEN 6
+                       WHEN word_progress.score <= 1 OR word_progress.times_forgotten > word_progress.times_remembered THEN 5
+                       WHEN word_progress.score >= 2 THEN 1
+                       ELSE 3
+                   END AS review_weight
+            FROM words
+            JOIN users ON users.id = words.owner_user_id
+            LEFT JOIN word_progress ON word_progress.word_id = words.id AND word_progress.user_id = ?
+            WHERE words.owner_user_id = ?
+            ORDER BY words.created_at DESC, words.id DESC
+            """,
+            (user_id, user_id),
+        )
 
     def list_partner_words(self, owner_user_id: int) -> list[sqlite3.Row]:
         return self.fetchall(
