@@ -154,6 +154,18 @@ class Database:
             (owner_user_id,),
         )
 
+    def list_training_words(self, user_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT words.*, users.display_name AS owner_name, word_progress.score AS progress_score
+            FROM words
+            JOIN users ON users.id = words.owner_user_id
+            LEFT JOIN word_progress ON word_progress.word_id = words.id AND word_progress.user_id = ?
+            WHERE words.owner_user_id = ?
+            ORDER BY words.created_at DESC, words.id DESC
+            """,
+            (user_id, user_id),
+        )
 
     def list_partner_words(self, owner_user_id: int) -> list[sqlite3.Row]:
         return self.fetchall(
@@ -164,6 +176,25 @@ class Database:
             ORDER BY words.created_at DESC, words.id DESC
             """,
             (owner_user_id,),
+        )
+
+    def list_partner_training_words(self, user_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT words.*, users.display_name AS owner_name, word_progress.score AS progress_score
+            FROM words
+            JOIN users ON users.id = words.owner_user_id
+            LEFT JOIN word_progress ON word_progress.word_id = words.id AND word_progress.user_id = ?
+            WHERE words.owner_user_id != ?
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM words AS own_words
+                  WHERE own_words.owner_user_id = ?
+                    AND lower(own_words.english) = lower(words.english)
+              )
+            ORDER BY words.created_at DESC, words.id DESC
+            """,
+            (user_id, user_id, user_id),
         )
 
     def copy_word_to_user(self, source_word_id: int, owner_user_id: int) -> bool:
