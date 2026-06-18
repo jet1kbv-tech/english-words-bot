@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from datetime import time
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, filters
@@ -9,6 +11,7 @@ from app.config import load_settings
 from app.database import Database
 from app.handlers.menu import menu_message
 from app.handlers.start import start
+from app.handlers.training import daily_reminder
 from app.handlers.words import BULK_WORDS, ENGLISH, EXAMPLE, TOPIC, TRANSLATION, add_word_start, bulk_add_words_start, bulk_words_step, cancel_add_word, confirm_delete_word, delete_word_prompt, dictionary_delete_page, dictionary_menu, dictionary_page, english_step, example_step, topic_step, translation_step
 from app.keyboards import ADD_WORD, BULK_ADD_WORDS
 
@@ -28,6 +31,12 @@ def build_application() -> Application:
     application = Application.builder().token(settings.bot_token).build()
     application.bot_data["settings"] = settings
     application.bot_data["db"] = db
+    if application.job_queue is not None:
+        application.job_queue.run_daily(
+            daily_reminder,
+            time=time(hour=14, minute=0, tzinfo=ZoneInfo("Europe/Moscow")),
+            name="daily_game_reminder",
+        )
 
     add_word_conversation = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex(f"^{ADD_WORD}$"), add_word_start)],

@@ -5,6 +5,7 @@ BULK_ADD_WORDS = "📥 Добавить список слов"
 MY_WORDS = "📚 Мой словарь"
 WORD_EXCHANGE = "🔄 Обмен словами"
 MY_CARDS = "🎯 Мои карточки"
+GAME_SESSION = "🎮 Игра на 10 слов"
 PROGRESS = "📊 Прогресс"
 SHOW_TRANSLATION = "👀 Показать ответ"
 REMEMBER = "✅ Помню"
@@ -25,15 +26,16 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
             [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
-            [KeyboardButton(MY_CARDS), KeyboardButton(PROGRESS)],
+            [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
+            [KeyboardButton(PROGRESS)],
         ],
         resize_keyboard=True,
     )
 
 
-def training_keyboard(exchange: bool = False) -> ReplyKeyboardMarkup:
-    remember_text = KNOW if exchange else REMEMBER
-    forget_text = DONT_KNOW if exchange else FORGET
+def training_keyboard(exchange: bool = False, game: bool = False) -> ReplyKeyboardMarkup:
+    remember_text = KNOW if (exchange or game) else REMEMBER
+    forget_text = DONT_KNOW if (exchange or game) else FORGET
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton(SHOW_TRANSLATION)],

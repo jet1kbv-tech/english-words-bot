@@ -61,6 +61,34 @@ class Database:
                 FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE,
                 UNIQUE(user_id, word_id)
             );
+
+            CREATE TABLE IF NOT EXISTS study_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                total_cards INTEGER NOT NULL,
+                known_cards INTEGER NOT NULL DEFAULT 0,
+                unknown_cards INTEGER NOT NULL DEFAULT 0,
+                skipped_cards INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                activity_date TEXT NOT NULL,
+                cards_reviewed INTEGER NOT NULL DEFAULT 0,
+                known_cards INTEGER NOT NULL DEFAULT 0,
+                unknown_cards INTEGER NOT NULL DEFAULT 0,
+                skipped_cards INTEGER NOT NULL DEFAULT 0,
+                streak_days INTEGER NOT NULL DEFAULT 0,
+                day_level TEXT NOT NULL DEFAULT 'Новичок',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, activity_date)
+            );
             """
         )
         self._connection.commit()
@@ -93,6 +121,10 @@ class Database:
         if user is None:
             raise RuntimeError("Failed to create or load user")
         return user
+
+
+    def list_users(self) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM users ORDER BY id")
 
     def get_user_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
@@ -254,4 +286,91 @@ class Database:
             WHERE user_id = ? AND word_id = ?
             """,
             (remembered_inc, forgotten_inc, now, now, user_id, word_id),
+        )
+
+
+    def start_study_session(self, user_id: int, total_cards: int) -> int:
+        now = utc_now()
+        cursor = self.execute(
+            """
+            INSERT INTO study_sessions (user_id, total_cards, started_at)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, total_cards, now),
+        )
+        return int(cursor.lastrowid)
+
+    def finish_study_session(self, session_id: int, known_cards: int, unknown_cards: int, skipped_cards: int) -> None:
+        self.execute(
+            """
+            UPDATE study_sessions
+            SET known_cards = ?, unknown_cards = ?, skipped_cards = ?, finished_at = ?
+            WHERE id = ?
+            """,
+            (known_cards, unknown_cards, skipped_cards, utc_now(), session_id),
+        )
+
+    def day_level(self, cards_reviewed: int) -> str:
+        if cards_reviewed >= 30:
+            return "Легенда"
+        if cards_reviewed >= 20:
+            return "Профи"
+        if cards_reviewed >= 10:
+            return "Разогрев"
+        if cards_reviewed > 0:
+            return "Старт"
+        return "Новичок"
+
+    def _previous_date(self, activity_date: str) -> str:
+        from datetime import date, timedelta
+
+        return (date.fromisoformat(activity_date) - timedelta(days=1)).isoformat()
+
+    def record_daily_activity(
+        self,
+        user_id: int,
+        activity_date: str,
+        cards_reviewed: int,
+        known_cards: int,
+        unknown_cards: int,
+        skipped_cards: int,
+    ) -> sqlite3.Row:
+        now = utc_now()
+        previous = self.get_daily_activity(user_id, self._previous_date(activity_date))
+        current = self.get_daily_activity(user_id, activity_date)
+        previous_streak = int(previous["streak_days"]) if previous else 0
+        base_streak = int(current["streak_days"]) if current else previous_streak + 1
+        self.execute(
+            """
+            INSERT INTO daily_activity (
+                user_id, activity_date, cards_reviewed, known_cards, unknown_cards,
+                skipped_cards, streak_days, day_level, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, activity_date) DO UPDATE SET
+                cards_reviewed = cards_reviewed + excluded.cards_reviewed,
+                known_cards = known_cards + excluded.known_cards,
+                unknown_cards = unknown_cards + excluded.unknown_cards,
+                skipped_cards = skipped_cards + excluded.skipped_cards,
+                streak_days = excluded.streak_days,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, activity_date, cards_reviewed, known_cards, unknown_cards, skipped_cards, base_streak, "Новичок", now, now),
+        )
+        row = self.get_daily_activity(user_id, activity_date)
+        if row is None:
+            raise RuntimeError("Failed to record daily activity")
+        level = self.day_level(int(row["cards_reviewed"]))
+        self.execute(
+            "UPDATE daily_activity SET day_level = ?, updated_at = ? WHERE id = ?",
+            (level, utc_now(), row["id"]),
+        )
+        refreshed = self.get_daily_activity(user_id, activity_date)
+        if refreshed is None:
+            raise RuntimeError("Failed to load daily activity")
+        return refreshed
+
+    def get_daily_activity(self, user_id: int, activity_date: str) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM daily_activity WHERE user_id = ? AND activity_date = ?",
+            (user_id, activity_date),
         )
