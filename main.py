@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from telegram import Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
 from app.config import load_settings
 from app.database import Database
@@ -11,6 +13,32 @@ from app.handlers.menu import menu_message
 from app.handlers.start import start
 from app.handlers.words import BULK_WORDS, ENGLISH, EXAMPLE, TOPIC, TRANSLATION, add_word_start, bulk_add_words_start, bulk_words_step, cancel_add_word, confirm_delete_word, delete_word_prompt, dictionary_delete_page, dictionary_menu, dictionary_page, english_step, example_step, topic_step, translation_step
 from app.keyboards import ADD_WORD, BULK_ADD_WORDS
+
+
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+
+
+async def daily_game_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    db: Database = context.application.bot_data["db"]
+    today = datetime.now(MOSCOW_TZ).date()
+    for user in db.list_registered_users():
+        if db.has_completed_session_on(user["id"], today):
+            continue
+        await context.bot.send_message(
+            chat_id=user["telegram_id"],
+            text="👋 Пора на короткую сессию английского?\n10 слов — и streak продолжится 🔥",
+        )
+
+
+def schedule_daily_reminder(application: Application) -> None:
+    if application.job_queue is None:
+        logging.warning("JobQueue is not available; install python-telegram-bot[job-queue] to enable daily reminders.")
+        return
+    application.job_queue.run_daily(
+        daily_game_reminder,
+        time=time(hour=14, minute=0, tzinfo=MOSCOW_TZ),
+        name="daily_game_reminder",
+    )
 
 
 async def error_handler(update: object, context) -> None:
@@ -55,6 +83,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(confirm_delete_word, pattern=r"^confirm_delete_word:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(dictionary_menu, pattern=r"^dict_menu$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_message))
+    schedule_daily_reminder(application)
     application.add_error_handler(error_handler)
     return application
 

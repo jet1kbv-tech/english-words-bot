@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +61,31 @@ class Database:
                 FOREIGN KEY (word_id) REFERENCES words(id) ON DELETE CASCADE,
                 UNIQUE(user_id, word_id)
             );
+
+            CREATE TABLE IF NOT EXISTS study_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                total_cards INTEGER NOT NULL DEFAULT 0,
+                remembered_count INTEGER NOT NULL DEFAULT 0,
+                forgotten_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                completed INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_activity (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                activity_date TEXT NOT NULL,
+                sessions_completed INTEGER NOT NULL DEFAULT 0,
+                cards_reviewed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, activity_date)
+            );
             """
         )
         self._connection.commit()
@@ -96,6 +121,122 @@ class Database:
 
     def get_user_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+
+
+    def list_registered_users(self) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM users ORDER BY id")
+
+    def select_game_words(self, user_id: int, limit: int = 10) -> list[sqlite3.Row]:
+        rows = self.fetchall(
+            """
+            SELECT words.*, word_progress.score, word_progress.times_remembered, word_progress.times_forgotten,
+                   CASE
+                       WHEN word_progress.id IS NULL THEN 'new'
+                       WHEN word_progress.score <= 1 OR word_progress.times_forgotten > word_progress.times_remembered THEN 'weak'
+                       WHEN word_progress.score >= 2 THEN 'strong'
+                       ELSE 'weak'
+                   END AS game_category
+            FROM words
+            LEFT JOIN word_progress ON word_progress.word_id = words.id AND word_progress.user_id = ?
+            WHERE words.owner_user_id = ?
+            """,
+            (user_id, user_id),
+        )
+        buckets = {"new": [], "weak": [], "strong": []}
+        for row in rows:
+            buckets[row["game_category"]].append(row)
+
+        import random
+
+        for bucket in buckets.values():
+            random.shuffle(bucket)
+
+        quotas = {"new": round(limit * 0.50), "weak": round(limit * 0.35), "strong": limit - round(limit * 0.50) - round(limit * 0.35)}
+        selected: list[sqlite3.Row] = []
+        selected_ids: set[int] = set()
+        for category in ("new", "weak", "strong"):
+            for row in buckets[category][: quotas[category]]:
+                selected.append(row)
+                selected_ids.add(int(row["id"]))
+
+        remaining = [row for category in ("new", "weak", "strong") for row in buckets[category] if int(row["id"]) not in selected_ids]
+        random.shuffle(remaining)
+        for row in remaining:
+            if len(selected) >= limit:
+                break
+            selected.append(row)
+            selected_ids.add(int(row["id"]))
+        random.shuffle(selected)
+        return selected[:limit]
+
+    def create_study_session(self, user_id: int, total_cards: int) -> int:
+        cursor = self.execute(
+            """
+            INSERT INTO study_sessions (user_id, started_at, total_cards)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, utc_now(), total_cards),
+        )
+        return int(cursor.lastrowid)
+
+    def finish_study_session(self, session_id: int, remembered_count: int, forgotten_count: int, skipped_count: int, completed: bool) -> None:
+        self.execute(
+            """
+            UPDATE study_sessions
+            SET finished_at = ?, remembered_count = ?, forgotten_count = ?, skipped_count = ?, completed = ?
+            WHERE id = ?
+            """,
+            (utc_now(), remembered_count, forgotten_count, skipped_count, int(completed), session_id),
+        )
+
+    def update_daily_activity(self, user_id: int, activity_date: date, cards_reviewed: int) -> sqlite3.Row:
+        now = utc_now()
+        date_text = activity_date.isoformat()
+        self.execute(
+            """
+            INSERT INTO daily_activity (user_id, activity_date, sessions_completed, cards_reviewed, created_at, updated_at)
+            VALUES (?, ?, 1, ?, ?, ?)
+            ON CONFLICT(user_id, activity_date) DO UPDATE SET
+                sessions_completed = sessions_completed + 1,
+                cards_reviewed = cards_reviewed + excluded.cards_reviewed,
+                updated_at = excluded.updated_at
+            """,
+            (user_id, date_text, cards_reviewed, now, now),
+        )
+        row = self.get_daily_activity(user_id, activity_date)
+        if row is None:
+            raise RuntimeError("Failed to update daily activity")
+        return row
+
+    def get_daily_activity(self, user_id: int, activity_date: date) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM daily_activity WHERE user_id = ? AND activity_date = ?",
+            (user_id, activity_date.isoformat()),
+        )
+
+    def has_completed_session_on(self, user_id: int, activity_date: date) -> bool:
+        row = self.get_daily_activity(user_id, activity_date)
+        return bool(row and row["sessions_completed"] > 0)
+
+    def current_streak(self, user_id: int, today: date) -> int:
+        rows = self.fetchall(
+            """
+            SELECT activity_date FROM daily_activity
+            WHERE user_id = ? AND sessions_completed > 0 AND activity_date <= ?
+            ORDER BY activity_date DESC
+            """,
+            (user_id, today.isoformat()),
+        )
+        streak = 0
+        expected = today
+        for row in rows:
+            activity_day = date.fromisoformat(row["activity_date"])
+            if activity_day == expected:
+                streak += 1
+                expected = date.fromordinal(expected.toordinal() - 1)
+            elif activity_day < expected:
+                break
+        return streak
 
     def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
         english = english.strip()

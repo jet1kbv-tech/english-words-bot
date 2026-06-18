@@ -3,9 +3,9 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from app.handlers.training import mark_card, send_current_card, show_progress, show_translation, start_exchange, start_training, stop_training
+from app.handlers.training import mark_card, send_current_card, show_progress, show_translation, start_exchange, start_game_session, start_training, stop_training
 from app.handlers.words import show_dictionary
-from app.keyboards import DONT_KNOW, FORGET, KNOW, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
+from app.keyboards import DONT_KNOW, FORGET, GAME_SESSION, KNOW, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
 
 
 async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -18,6 +18,8 @@ async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await start_exchange(update, context)
     elif text == MY_CARDS:
         await start_training(update, context, only_mine=True)
+    elif text == GAME_SESSION:
+        await start_game_session(update, context)
     elif text == SHOW_TRANSLATION:
         await show_translation(update, context)
     elif text in {REMEMBER, KNOW}:
