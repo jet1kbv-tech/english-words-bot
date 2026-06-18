@@ -125,7 +125,7 @@ async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     direction_text = "🇬🇧 → 🇷🇺" if direction == EN_TO_RU else "🇷🇺 → 🇬🇧"
     await update.effective_message.reply_text(
         f"Карточка {index + 1}/{len(words)}\n\n{direction_text}\nПереведи:\n{prompt}",
-        reply_markup=training_keyboard(exchange=session.get("exchange", False)),
+        reply_markup=training_keyboard(exchange=session.get("exchange", False) or session.get("game", False)),
     )
 
 
@@ -139,7 +139,7 @@ async def show_translation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     word = words[index]
     direction = _card_direction(session, index)
     text = _format_answer(word, direction)
-    await update.effective_message.reply_text(text, reply_markup=training_keyboard(exchange=session.get("exchange", False)))
+    await update.effective_message.reply_text(text, reply_markup=training_keyboard(exchange=session.get("exchange", False) or session.get("game", False)))
 
 
 async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remembered: bool | None) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import sqlite3
 from collections.abc import Iterable
 from datetime import UTC, date, datetime
@@ -146,12 +147,12 @@ class Database:
         for row in rows:
             buckets[row["game_category"]].append(row)
 
-        import random
-
         for bucket in buckets.values():
             random.shuffle(bucket)
 
-        quotas = {"new": round(limit * 0.50), "weak": round(limit * 0.35), "strong": limit - round(limit * 0.50) - round(limit * 0.35)}
+        new_quota = round(limit * 0.50)
+        weak_quota = round(limit * 0.35)
+        quotas = {"new": new_quota, "weak": weak_quota, "strong": limit - new_quota - weak_quota}
         selected: list[sqlite3.Row] = []
         selected_ids: set[int] = set()
         for category in ("new", "weak", "strong"):
@@ -159,7 +160,12 @@ class Database:
                 selected.append(row)
                 selected_ids.add(int(row["id"]))
 
-        remaining = [row for category in ("new", "weak", "strong") for row in buckets[category] if int(row["id"]) not in selected_ids]
+        remaining = [
+            row
+            for category in ("new", "weak", "strong")
+            for row in buckets[category]
+            if int(row["id"]) not in selected_ids
+        ]
         random.shuffle(remaining)
         for row in remaining:
             if len(selected) >= limit:
@@ -179,7 +185,9 @@ class Database:
         )
         return int(cursor.lastrowid)
 
-    def finish_study_session(self, session_id: int, remembered_count: int, forgotten_count: int, skipped_count: int, completed: bool) -> None:
+    def finish_study_session(
+        self, session_id: int, remembered_count: int, forgotten_count: int, skipped_count: int, completed: bool
+    ) -> None:
         self.execute(
             """
             UPDATE study_sessions
