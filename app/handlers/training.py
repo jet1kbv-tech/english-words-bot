@@ -14,6 +14,29 @@ RU_TO_EN = "RU_TO_EN"
 CARD_DIRECTIONS = (EN_TO_RU, RU_TO_EN)
 
 
+def card_weight(progress_score: int | None) -> int:
+    if progress_score is None:
+        return 5
+    if progress_score <= 0:
+        return 4
+    if progress_score == 1:
+        return 3
+    if progress_score == 2:
+        return 2
+    return 1
+
+
+def _weighted_word_order(words: list) -> list:
+    remaining = list(words)
+    ordered = []
+    while remaining:
+        weights = [card_weight(word["progress_score"]) for word in remaining]
+        selected = random.choices(remaining, weights=weights, k=1)[0]
+        ordered.append(selected)
+        remaining.remove(selected)
+    return ordered
+
+
 def _session(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.user_data.setdefault("training", {})
 
@@ -47,11 +70,11 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, onl
     if user is None or update.effective_message is None:
         return
     db: Database = context.application.bot_data["db"]
-    words = db.list_words(user["id"])
+    words = db.list_training_words(user["id"])
     if not words:
         await update.effective_message.reply_text("Пока нет слов для тренировки. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
         return
-    random.shuffle(words)
+    words = _weighted_word_order(words)
     context.user_data["training"] = {
         "words": words,
         "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
@@ -66,11 +89,11 @@ async def start_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if user is None or update.effective_message is None:
         return
     db: Database = context.application.bot_data["db"]
-    words = db.list_partner_words(user["id"])
+    words = db.list_partner_training_words(user["id"])
     if not words:
         await update.effective_message.reply_text("Пока нет слов партнёра для обмена.", reply_markup=main_menu_keyboard())
         return
-    random.shuffle(words)
+    words = _weighted_word_order(words)
     context.user_data["training"] = {
         "words": words,
         "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
