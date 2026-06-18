@@ -68,7 +68,13 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
         await update.effective_message.reply_text("Активной тренировки нет.", reply_markup=main_menu_keyboard())
         return
     word = words[index]
-    context.application.bot_data["db"].update_progress(user["id"], word["id"], remembered)
+    db: Database = context.application.bot_data["db"]
+    if db.fetchone("SELECT 1 FROM words WHERE id = ?", (word["id"],)) is None:
+        session["index"] = index + 1
+        await update.effective_message.reply_text("Эта карточка была удалена, пропускаем её.")
+        await send_current_card(update, context)
+        return
+    db.update_progress(user["id"], word["id"], remembered)
     session["index"] = index + 1
     if remembered is True:
         await update.effective_message.reply_text("Отлично, засчитано ✅")
