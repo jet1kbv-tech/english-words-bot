@@ -12,6 +12,7 @@ FORGET = "❌ Не помню"
 KNOW = "✅ Знаю"
 DONT_KNOW = "❌ Не знаю"
 SKIP = "⏭ Пропустить"
+NEXT_CARD = "➡️ Следующая карточка"
 STOP = "🛑 Закончить"
 
 # Backward-compatible aliases for old imports / older Telegram keyboards.
@@ -38,6 +39,16 @@ def training_keyboard(exchange: bool = False) -> ReplyKeyboardMarkup:
             [KeyboardButton(SHOW_TRANSLATION)],
             [KeyboardButton(remember_text), KeyboardButton(forget_text)],
             [KeyboardButton(SKIP), KeyboardButton(STOP)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def answer_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(NEXT_CARD)],
+            [KeyboardButton(STOP)],
         ],
         resize_keyboard=True,
     )

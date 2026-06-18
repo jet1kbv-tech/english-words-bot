@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 
 from app.database import Database
 from app.handlers.start import require_user
-from app.keyboards import main_menu_keyboard, training_keyboard
+from app.keyboards import answer_keyboard, main_menu_keyboard, training_keyboard
 
 EN_TO_RU = "EN_TO_RU"
 RU_TO_EN = "RU_TO_EN"
@@ -23,6 +23,23 @@ def _card_direction(session: dict, index: int) -> str:
     while len(directions) <= index:
         directions.append(random.choice(CARD_DIRECTIONS))
     return directions[index]
+
+
+def _format_answer(word: dict, direction: str, prefix: str | None = None, extra_status: str | None = None) -> str:
+    if direction == EN_TO_RU:
+        answer = f"{word['english']} — {word['translation']}"
+    else:
+        answer = f"{word['translation']} — {word['english']}"
+
+    parts = []
+    if prefix:
+        parts.append(prefix)
+    parts.append(f"Ответ:\n{answer}")
+    if word["example"]:
+        parts.append(f"Example: {word['example']}")
+    if extra_status:
+        parts.append(extra_status)
+    return "\n\n".join(parts)
 
 
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, only_mine: bool) -> None:
@@ -90,12 +107,7 @@ async def show_translation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     word = words[index]
     direction = _card_direction(session, index)
-    if direction == EN_TO_RU:
-        text = f"{word['english']} — {word['translation']}"
-    else:
-        text = f"{word['translation']} — {word['english']}"
-    if word["example"]:
-        text += f"\n\nExample: {word['example']}"
+    text = _format_answer(word, direction)
     await update.effective_message.reply_text(text, reply_markup=training_keyboard(exchange=session.get("exchange", False)))
 
 
@@ -118,17 +130,25 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
         return
     db.update_progress(user["id"], word["id"], remembered)
     session["index"] = index + 1
-    if session.get("exchange") and remembered is False:
-        copied = db.copy_word_to_user(word["id"], user["id"])
-        message = "Добавил слово в твой словарь для повторения" if copied else "Это слово уже есть в твоём словаре"
-        await update.effective_message.reply_text(message)
-    elif remembered is True:
-        await update.effective_message.reply_text("Отлично, засчитано ✅")
-    elif remembered is False:
-        await update.effective_message.reply_text("Ничего страшного, повторим позже ❌")
-    else:
+    if remembered is None:
         await update.effective_message.reply_text("Пропускаем ⏭")
-    await send_current_card(update, context)
+        await send_current_card(update, context)
+        return
+
+    direction = _card_direction(session, index)
+    is_exchange = session.get("exchange", False)
+    if remembered is True:
+        prefix = "✅ Знаю" if is_exchange else "✅ Помню"
+        status = None
+    else:
+        prefix = "❌ Не знаю" if is_exchange else "❌ Не помню"
+        status = None
+        if is_exchange:
+            copied = db.copy_word_to_user(word["id"], user["id"])
+            status = "Добавил слово в твой словарь" if copied else "Это слово уже есть в твоём словаре"
+
+    text = _format_answer(word, direction, prefix=prefix, extra_status=status)
+    await update.effective_message.reply_text(text, reply_markup=answer_keyboard())
 
 
 async def stop_training(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
