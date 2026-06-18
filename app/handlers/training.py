@@ -199,6 +199,7 @@ async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             context.user_data.pop("training", None)
             await update.effective_message.reply_text("Тренировка завершена: карточки закончились.", reply_markup=main_menu_keyboard())
         return
+    session.pop("last_positive_answer", None)
     word = words[index]
     direction = _card_direction(session, index)
     prompt = word["english"] if direction == EN_TO_RU else word["translation"]
@@ -242,6 +243,7 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
     db.update_progress(user["id"], word["id"], remembered)
     session["index"] = index + 1
     if remembered is None:
+        session.pop("last_positive_answer", None)
         session["skipped"] = int(session.get("skipped", 0)) + 1
         await update.effective_message.reply_text("Пропускаем ⏭")
         await send_current_card(update, context)
@@ -251,12 +253,21 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
         session["known"] = int(session.get("known", 0)) + 1
     else:
         session["unknown"] = int(session.get("unknown", 0)) + 1
+        session.pop("last_positive_answer", None)
 
     direction = _card_direction(session, index)
     is_exchange = session.get("exchange", False)
     if remembered is True:
         prefix = "✅ Знаю" if (is_exchange or session.get("game")) else "✅ Помню"
         status = None
+        session["last_positive_answer"] = {
+            "word_id": word["id"],
+            "index": index,
+            "direction": direction,
+            "exchange": bool(is_exchange),
+            "game": bool(session.get("game")),
+            "corrected": False,
+        }
     else:
         prefix = "❌ Не знаю" if (is_exchange or session.get("game")) else "❌ Не помню"
         status = None
@@ -264,7 +275,39 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
             copied = db.copy_word_to_user(word["id"], user["id"])
             status = "Добавил слово в твой словарь" if copied else "Это слово уже есть в твоём словаре"
 
-    await update.effective_message.reply_text(_format_answer(word, direction, prefix=prefix, extra_status=status), reply_markup=answer_keyboard())
+    await update.effective_message.reply_text(
+        _format_answer(word, direction, prefix=prefix, extra_status=status),
+        reply_markup=answer_keyboard(can_correct=remembered is True),
+    )
+
+
+async def correct_last_positive_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = await require_user(update, context)
+    session = _session(context)
+    correction = session.get("last_positive_answer")
+    if user is None or update.effective_message is None:
+        return
+    if not correction:
+        await update.effective_message.reply_text("Сейчас нечего исправлять.", reply_markup=answer_keyboard())
+        return
+    word_id = correction.get("word_id")
+    db: Database = context.application.bot_data["db"]
+    word = db.fetchone("SELECT * FROM words WHERE id = ?", (word_id,))
+    if word is None:
+        session.pop("last_positive_answer", None)
+        await update.effective_message.reply_text("Эта карточка была удалена, исправлять нечего.", reply_markup=answer_keyboard())
+        return
+    if not correction.get("corrected"):
+        db.correct_remembered_to_forgotten(user["id"], word_id)
+        session["known"] = max(int(session.get("known", 0)) - 1, 0)
+        session["unknown"] = int(session.get("unknown", 0)) + 1
+        if correction.get("exchange"):
+            db.copy_word_to_user(word_id, user["id"])
+        correction["corrected"] = True
+
+    direction = correction.get("direction") or _card_direction(session, int(correction.get("index", 0)))
+    text = _format_answer(word, direction, prefix="Ок, исправил: отмечено как ❌ Не знаю")
+    await update.effective_message.reply_text(text, reply_markup=answer_keyboard())
 
 
 async def stop_training(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
