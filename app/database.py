@@ -154,6 +154,24 @@ class Database:
             (owner_user_id,),
         )
 
+
+    def list_partner_words(self, owner_user_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT words.*, users.display_name AS owner_name
+            FROM words JOIN users ON users.id = words.owner_user_id
+            WHERE owner_user_id != ?
+            ORDER BY words.created_at DESC, words.id DESC
+            """,
+            (owner_user_id,),
+        )
+
+    def copy_word_to_user(self, source_word_id: int, owner_user_id: int) -> bool:
+        source = self.fetchone("SELECT * FROM words WHERE id = ?", (source_word_id,))
+        if source is None:
+            return False
+        return self.add_word(owner_user_id, source["english"], source["translation"], source["topic"], source["example"])
+
     def count_words(self, owner_user_id: int | None = None) -> int:
         if owner_user_id is None:
             row = self.fetchone("SELECT COUNT(*) AS total FROM words")

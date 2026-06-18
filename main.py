@@ -9,7 +9,7 @@ from app.config import load_settings
 from app.database import Database
 from app.handlers.menu import menu_message
 from app.handlers.start import start
-from app.handlers.words import BULK_WORDS, ENGLISH, EXAMPLE, TOPIC, TRANSLATION, add_word_start, bulk_add_words_start, bulk_words_step, cancel_add_word, cancel_delete_word, confirm_delete_word, delete_word_prompt, english_step, example_step, topic_step, translation_step
+from app.handlers.words import BULK_WORDS, ENGLISH, EXAMPLE, TOPIC, TRANSLATION, add_word_start, bulk_add_words_start, bulk_words_step, cancel_add_word, confirm_delete_word, delete_word_prompt, dictionary_delete_page, dictionary_menu, dictionary_page, english_step, example_step, topic_step, translation_step
 from app.keyboards import ADD_WORD, BULK_ADD_WORDS
 
 
@@ -49,9 +49,11 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(add_word_conversation)
     application.add_handler(bulk_add_words_conversation)
-    application.add_handler(CallbackQueryHandler(delete_word_prompt, pattern=r"^delete_word:\d+$"))
-    application.add_handler(CallbackQueryHandler(confirm_delete_word, pattern=r"^confirm_delete_word:\d+$"))
-    application.add_handler(CallbackQueryHandler(cancel_delete_word, pattern=r"^cancel_delete_word:\d+$"))
+    application.add_handler(CallbackQueryHandler(dictionary_page, pattern=r"^dict_page:\d+$"))
+    application.add_handler(CallbackQueryHandler(dictionary_delete_page, pattern=r"^dict_delete_page:\d+$"))
+    application.add_handler(CallbackQueryHandler(delete_word_prompt, pattern=r"^dict_delete_word:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(confirm_delete_word, pattern=r"^confirm_delete_word:\d+:\d+$"))
+    application.add_handler(CallbackQueryHandler(dictionary_menu, pattern=r"^dict_menu$"))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_message))
     application.add_error_handler(error_handler)
     return application

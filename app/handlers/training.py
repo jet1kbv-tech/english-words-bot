@@ -30,7 +30,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, onl
     if user is None or update.effective_message is None:
         return
     db: Database = context.application.bot_data["db"]
-    words = db.list_words(user["id"] if only_mine else None)
+    words = db.list_words(user["id"])
     if not words:
         await update.effective_message.reply_text("Пока нет слов для тренировки. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
         return
@@ -39,7 +39,26 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, onl
         "words": words,
         "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
         "index": 0,
-        "only_mine": only_mine,
+        "exchange": False,
+    }
+    await send_current_card(update, context)
+
+
+async def start_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = await require_user(update, context)
+    if user is None or update.effective_message is None:
+        return
+    db: Database = context.application.bot_data["db"]
+    words = db.list_partner_words(user["id"])
+    if not words:
+        await update.effective_message.reply_text("Пока нет слов партнёра для обмена.", reply_markup=main_menu_keyboard())
+        return
+    random.shuffle(words)
+    context.user_data["training"] = {
+        "words": words,
+        "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
+        "index": 0,
+        "exchange": True,
     }
     await send_current_card(update, context)
 
@@ -58,7 +77,7 @@ async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     direction_text = "🇬🇧 → 🇷🇺" if direction == EN_TO_RU else "🇷🇺 → 🇬🇧"
     await update.effective_message.reply_text(
         f"Карточка {index + 1}/{len(words)}\n\n{direction_text}\nПереведи:\n{prompt}",
-        reply_markup=training_keyboard(),
+        reply_markup=training_keyboard(exchange=session.get("exchange", False)),
     )
 
 
@@ -77,7 +96,7 @@ async def show_translation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         text = f"{word['translation']} — {word['english']}"
     if word["example"]:
         text += f"\n\nExample: {word['example']}"
-    await update.effective_message.reply_text(text, reply_markup=training_keyboard())
+    await update.effective_message.reply_text(text, reply_markup=training_keyboard(exchange=session.get("exchange", False)))
 
 
 async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remembered: bool | None) -> None:
@@ -99,7 +118,11 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
         return
     db.update_progress(user["id"], word["id"], remembered)
     session["index"] = index + 1
-    if remembered is True:
+    if session.get("exchange") and remembered is False:
+        copied = db.copy_word_to_user(word["id"], user["id"])
+        message = "Добавил слово в твой словарь для повторения" if copied else "Это слово уже есть в твоём словаре"
+        await update.effective_message.reply_text(message)
+    elif remembered is True:
         await update.effective_message.reply_text("Отлично, засчитано ✅")
     elif remembered is False:
         await update.effective_message.reply_text("Ничего страшного, повторим позже ❌")
