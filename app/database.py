@@ -97,7 +97,11 @@ class Database:
     def get_user_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
 
-    def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> None:
+    def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
+        english = english.strip()
+        translation = translation.strip()
+        if self.word_exists(owner_user_id, english):
+            return False
         now = utc_now()
         self.execute(
             """
@@ -106,6 +110,30 @@ class Database:
             """,
             (owner_user_id, english, translation, topic, example, now, now),
         )
+        return True
+
+    def word_exists(self, owner_user_id: int, english: str) -> bool:
+        row = self.fetchone(
+            "SELECT 1 FROM words WHERE owner_user_id = ? AND lower(english) = lower(?) LIMIT 1",
+            (owner_user_id, english.strip()),
+        )
+        return row is not None
+
+    def get_owned_word(self, word_id: int, owner_user_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM words WHERE id = ? AND owner_user_id = ?",
+            (word_id, owner_user_id),
+        )
+
+    def delete_word(self, word_id: int, owner_user_id: int) -> bool:
+        if self.get_owned_word(word_id, owner_user_id) is None:
+            return False
+        self.execute("DELETE FROM word_progress WHERE word_id = ?", (word_id,))
+        cursor = self.execute(
+            "DELETE FROM words WHERE id = ? AND owner_user_id = ?",
+            (word_id, owner_user_id),
+        )
+        return cursor.rowcount > 0
 
     def list_words(self, owner_user_id: int | None = None) -> list[sqlite3.Row]:
         if owner_user_id is None:

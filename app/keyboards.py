@@ -1,6 +1,7 @@
 from telegram import KeyboardButton, ReplyKeyboardMarkup
 
 ADD_WORD = "➕ Добавить слово"
+BULK_ADD_WORDS = "📥 Добавить список слов"
 MY_WORDS = "📚 Мой словарь"
 ALL_WORDS = "👥 Общий словарь"
 MY_CARDS = "🎯 Мои карточки"
@@ -16,8 +17,9 @@ STOP = "🛑 Закончить"
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(ADD_WORD), KeyboardButton(MY_WORDS)],
-            [KeyboardButton(ALL_WORDS), KeyboardButton(MY_CARDS)],
+            [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
+            [KeyboardButton(MY_WORDS), KeyboardButton(ALL_WORDS)],
+            [KeyboardButton(MY_CARDS)],
             [KeyboardButton(ALL_CARDS), KeyboardButton(PROGRESS)],
         ],
         resize_keyboard=True,
