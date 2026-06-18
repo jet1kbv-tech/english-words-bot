@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import random
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -12,6 +14,8 @@ from app.keyboards import answer_keyboard, main_menu_keyboard, training_keyboard
 EN_TO_RU = "EN_TO_RU"
 RU_TO_EN = "RU_TO_EN"
 CARD_DIRECTIONS = (EN_TO_RU, RU_TO_EN)
+GAME_SESSION_SIZE = 10
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
 def card_weight(progress_score: int | None) -> int:
@@ -35,6 +39,30 @@ def _weighted_word_order(words: list) -> list:
         ordered.append(selected)
         remaining.remove(selected)
     return ordered
+
+
+def build_game_session_words(words: list, limit: int = GAME_SESSION_SIZE) -> list:
+    """Pick a short mix: mostly new/weak cards plus a few strong cards."""
+    new_words = [word for word in words if word["progress_score"] is None]
+    weak_words = [word for word in words if word["progress_score"] is not None and word["progress_score"] <= 2]
+    strong_words = [word for word in words if word["progress_score"] is not None and word["progress_score"] > 2]
+
+    random.shuffle(new_words)
+    weak_words = _weighted_word_order(weak_words)
+    random.shuffle(strong_words)
+
+    strong_quota = max(1, limit // 5)
+    primary_quota = limit - strong_quota
+    selected = (new_words + weak_words)[:primary_quota]
+    selected.extend(strong_words[:strong_quota])
+
+    if len(selected) < limit:
+        selected_ids = {word["id"] for word in selected}
+        fallback = [word for word in _weighted_word_order(words) if word["id"] not in selected_ids]
+        selected.extend(fallback[: limit - len(selected)])
+
+    random.shuffle(selected)
+    return selected[:limit]
 
 
 def _session(context: ContextTypes.DEFAULT_TYPE) -> dict:
@@ -65,6 +93,10 @@ def _format_answer(word: dict, direction: str, prefix: str | None = None, extra_
     return "\n\n".join(parts)
 
 
+def _today_moscow() -> str:
+    return datetime.now(MOSCOW_TZ).date().isoformat()
+
+
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, only_mine: bool) -> None:
     user = await require_user(update, context)
     if user is None or update.effective_message is None:
@@ -80,7 +112,34 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, onl
         "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
         "index": 0,
         "exchange": False,
+        "game": False,
     }
+    await send_current_card(update, context)
+
+
+async def start_game_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = await require_user(update, context)
+    if user is None or update.effective_message is None:
+        return
+    db: Database = context.application.bot_data["db"]
+    words = db.list_training_words(user["id"])
+    if not words:
+        await update.effective_message.reply_text("Пока нет слов для игры. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
+        return
+    words = build_game_session_words(words)
+    session_id = db.start_study_session(user["id"], len(words))
+    context.user_data["training"] = {
+        "words": words,
+        "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
+        "index": 0,
+        "exchange": False,
+        "game": True,
+        "session_id": session_id,
+        "known": 0,
+        "unknown": 0,
+        "skipped": 0,
+    }
+    await update.effective_message.reply_text("🎮 Игра на 10 слов начинается!", reply_markup=training_keyboard(game=True))
     await send_current_card(update, context)
 
 
@@ -99,8 +158,34 @@ async def start_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
         "index": 0,
         "exchange": True,
+        "game": False,
     }
     await send_current_card(update, context)
+
+
+async def _finish_game(update: Update, context: ContextTypes.DEFAULT_TYPE, session: dict) -> None:
+    db: Database = context.application.bot_data["db"]
+    user = await require_user(update, context)
+    if user is None or update.effective_message is None:
+        return
+    known = int(session.get("known", 0))
+    unknown = int(session.get("unknown", 0))
+    skipped = int(session.get("skipped", 0))
+    total = len(session.get("words", []))
+    if session.get("session_id"):
+        db.finish_study_session(session["session_id"], known, unknown, skipped)
+    activity = db.record_daily_activity(user["id"], _today_moscow(), known + unknown, known, unknown, skipped)
+    context.user_data.pop("training", None)
+    await update.effective_message.reply_text(
+        "🎮 Игра завершена!\n"
+        f"• карточек: {total}\n"
+        f"• знаю: {known}\n"
+        f"• не знаю: {unknown}\n"
+        f"• пропущено: {skipped}\n"
+        f"• streak: {activity['streak_days']} дн.\n"
+        f"• уровень дня: {activity['day_level']}",
+        reply_markup=main_menu_keyboard(),
+    )
 
 
 async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -108,16 +193,20 @@ async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     words = session.get("words", [])
     index = session.get("index", 0)
     if index >= len(words):
-        context.user_data.pop("training", None)
-        await update.effective_message.reply_text("Тренировка завершена: карточки закончились.", reply_markup=main_menu_keyboard())
+        if session.get("game"):
+            await _finish_game(update, context, session)
+        else:
+            context.user_data.pop("training", None)
+            await update.effective_message.reply_text("Тренировка завершена: карточки закончились.", reply_markup=main_menu_keyboard())
         return
     word = words[index]
     direction = _card_direction(session, index)
     prompt = word["english"] if direction == EN_TO_RU else word["translation"]
     direction_text = "🇬🇧 → 🇷🇺" if direction == EN_TO_RU else "🇷🇺 → 🇬🇧"
+    title = "Игра" if session.get("game") else "Карточка"
     await update.effective_message.reply_text(
-        f"Карточка {index + 1}/{len(words)}\n\n{direction_text}\nПереведи:\n{prompt}",
-        reply_markup=training_keyboard(exchange=session.get("exchange", False)),
+        f"{title} {index + 1}/{len(words)}\n\n{direction_text}\nПереведи:\n{prompt}",
+        reply_markup=training_keyboard(exchange=session.get("exchange", False), game=session.get("game", False)),
     )
 
 
@@ -130,8 +219,7 @@ async def show_translation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
     word = words[index]
     direction = _card_direction(session, index)
-    text = _format_answer(word, direction)
-    await update.effective_message.reply_text(text, reply_markup=training_keyboard(exchange=session.get("exchange", False)))
+    await update.effective_message.reply_text(_format_answer(word, direction), reply_markup=training_keyboard(exchange=session.get("exchange", False), game=session.get("game", False)))
 
 
 async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remembered: bool | None) -> None:
@@ -154,27 +242,36 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
     db.update_progress(user["id"], word["id"], remembered)
     session["index"] = index + 1
     if remembered is None:
+        session["skipped"] = int(session.get("skipped", 0)) + 1
         await update.effective_message.reply_text("Пропускаем ⏭")
         await send_current_card(update, context)
         return
 
+    if remembered:
+        session["known"] = int(session.get("known", 0)) + 1
+    else:
+        session["unknown"] = int(session.get("unknown", 0)) + 1
+
     direction = _card_direction(session, index)
     is_exchange = session.get("exchange", False)
     if remembered is True:
-        prefix = "✅ Знаю" if is_exchange else "✅ Помню"
+        prefix = "✅ Знаю" if (is_exchange or session.get("game")) else "✅ Помню"
         status = None
     else:
-        prefix = "❌ Не знаю" if is_exchange else "❌ Не помню"
+        prefix = "❌ Не знаю" if (is_exchange or session.get("game")) else "❌ Не помню"
         status = None
         if is_exchange:
             copied = db.copy_word_to_user(word["id"], user["id"])
             status = "Добавил слово в твой словарь" if copied else "Это слово уже есть в твоём словаре"
 
-    text = _format_answer(word, direction, prefix=prefix, extra_status=status)
-    await update.effective_message.reply_text(text, reply_markup=answer_keyboard())
+    await update.effective_message.reply_text(_format_answer(word, direction, prefix=prefix, extra_status=status), reply_markup=answer_keyboard())
 
 
 async def stop_training(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    session = context.user_data.get("training")
+    if session and session.get("game") and update.effective_message is not None:
+        await _finish_game(update, context, session)
+        return
     context.user_data.pop("training", None)
     await update.effective_message.reply_text("Тренировка остановлена.", reply_markup=main_menu_keyboard())
 
@@ -185,11 +282,26 @@ async def show_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     db: Database = context.application.bot_data["db"]
     summary = db.progress_summary(user["id"])
+    activity = db.get_daily_activity(user["id"], _today_moscow())
+    streak = activity["streak_days"] if activity else 0
+    day_level = activity["day_level"] if activity else "Новичок"
     await update.effective_message.reply_text(
         "Ваш прогресс:\n"
         f"• добавлено слов: {db.count_words(user['id'])}\n"
         f"• всего доступно слов: {db.count_words()}\n"
         f"• карточек тренировали: {summary['trained_cards']}\n"
-        f"• средний score: {summary['average_score']:.2f}",
+        f"• средний score: {summary['average_score']:.2f}\n"
+        f"• streak: {streak} дн.\n"
+        f"• уровень дня: {day_level}",
         reply_markup=main_menu_keyboard(),
     )
+
+
+async def daily_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    db: Database = context.application.bot_data["db"]
+    for user in db.list_users():
+        await context.bot.send_message(
+            chat_id=user["telegram_id"],
+            text="⏰ Время короткой практики: сыграйте 🎮 Игру на 10 слов и продлите streak!",
+            reply_markup=main_menu_keyboard(),
+        )

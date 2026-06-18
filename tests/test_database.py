@@ -53,3 +53,27 @@ class DatabaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class StudySessionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.user = self.db.upsert_user(2, "player", "Player")
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_study_session_and_daily_activity(self) -> None:
+        session_id = self.db.start_study_session(self.user["id"], 10)
+        self.db.finish_study_session(session_id, known_cards=7, unknown_cards=2, skipped_cards=1)
+
+        session = self.db.fetchone("SELECT * FROM study_sessions WHERE id = ?", (session_id,))
+        self.assertEqual(session["known_cards"], 7)
+        self.assertIsNotNone(session["finished_at"])
+
+        activity = self.db.record_daily_activity(self.user["id"], "2026-06-18", 10, 7, 2, 1)
+        self.assertEqual(activity["cards_reviewed"], 10)
+        self.assertEqual(activity["streak_days"], 1)
+        self.assertEqual(activity["day_level"], "Разогрев")
