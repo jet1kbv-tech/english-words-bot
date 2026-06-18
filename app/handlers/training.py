@@ -9,9 +9,20 @@ from app.database import Database
 from app.handlers.start import require_user
 from app.keyboards import main_menu_keyboard, training_keyboard
 
+EN_TO_RU = "EN_TO_RU"
+RU_TO_EN = "RU_TO_EN"
+CARD_DIRECTIONS = (EN_TO_RU, RU_TO_EN)
+
 
 def _session(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.user_data.setdefault("training", {})
+
+
+def _card_direction(session: dict, index: int) -> str:
+    directions = session.setdefault("directions", [])
+    while len(directions) <= index:
+        directions.append(random.choice(CARD_DIRECTIONS))
+    return directions[index]
 
 
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, only_mine: bool) -> None:
@@ -24,7 +35,12 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, onl
         await update.effective_message.reply_text("Пока нет слов для тренировки. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
         return
     random.shuffle(words)
-    context.user_data["training"] = {"words": words, "index": 0, "only_mine": only_mine}
+    context.user_data["training"] = {
+        "words": words,
+        "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
+        "index": 0,
+        "only_mine": only_mine,
+    }
     await send_current_card(update, context)
 
 
@@ -37,8 +53,11 @@ async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.effective_message.reply_text("Тренировка завершена: карточки закончились.", reply_markup=main_menu_keyboard())
         return
     word = words[index]
+    direction = _card_direction(session, index)
+    prompt = word["english"] if direction == EN_TO_RU else word["translation"]
+    direction_text = "🇬🇧 → 🇷🇺" if direction == EN_TO_RU else "🇷🇺 → 🇬🇧"
     await update.effective_message.reply_text(
-        f"Карточка {index + 1}/{len(words)}\n\n{word['english']}",
+        f"Карточка {index + 1}/{len(words)}\n\n{direction_text}\nПереведи:\n{prompt}",
         reply_markup=training_keyboard(),
     )
 
@@ -51,9 +70,13 @@ async def show_translation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.effective_message.reply_text("Активной тренировки нет.", reply_markup=main_menu_keyboard())
         return
     word = words[index]
-    text = f"{word['english']} — {word['translation']}"
+    direction = _card_direction(session, index)
+    if direction == EN_TO_RU:
+        text = f"{word['english']} — {word['translation']}"
+    else:
+        text = f"{word['translation']} — {word['english']}"
     if word["example"]:
-        text += f"\n\nПример: {word['example']}"
+        text += f"\n\nExample: {word['example']}"
     await update.effective_message.reply_text(text, reply_markup=training_keyboard())
 
 
