@@ -1,6 +1,6 @@
+from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from datetime import date, timedelta
 import unittest
 
 from app.database import Database
