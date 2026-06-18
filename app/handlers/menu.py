@@ -3,9 +3,9 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from app.handlers.training import mark_card, show_progress, show_translation, start_exchange, start_training, stop_training
+from app.handlers.training import mark_card, send_current_card, show_progress, show_translation, start_exchange, start_training, stop_training
 from app.handlers.words import show_dictionary
-from app.keyboards import DONT_KNOW, FORGET, KNOW, MY_CARDS, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
+from app.keyboards import DONT_KNOW, FORGET, KNOW, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
 
 
 async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -26,6 +26,8 @@ async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await mark_card(update, context, remembered=False)
     elif text == SKIP:
         await mark_card(update, context, remembered=None)
+    elif text == NEXT_CARD:
+        await send_current_card(update, context)
     elif text == STOP:
         await stop_training(update, context)
     elif text == PROGRESS:
