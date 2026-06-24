@@ -16,6 +16,7 @@ SKIP = "⏭ Пропустить"
 NEXT_CARD = "➡️ Следующая карточка"
 STOP = "🛑 Закончить"
 MISTAKE = "😬 Ошибся"
+I_WAS_RIGHT = "😬 Я был прав"
 
 # Backward-compatible aliases for old imports / older Telegram keyboards.
 ALL_WORDS = WORD_EXCHANGE
@@ -47,10 +48,12 @@ def training_keyboard(exchange: bool = False, game: bool = False) -> ReplyKeyboa
     )
 
 
-def answer_keyboard(can_correct: bool = False) -> ReplyKeyboardMarkup:
+def answer_keyboard(can_correct: bool = False, can_confirm_correct: bool = False) -> ReplyKeyboardMarkup:
     rows = []
     if can_correct:
         rows.append([KeyboardButton(MISTAKE)])
+    if can_confirm_correct:
+        rows.append([KeyboardButton(I_WAS_RIGHT)])
     rows.extend(
         [
             [KeyboardButton(NEXT_CARD)],
@@ -58,3 +61,7 @@ def answer_keyboard(can_correct: bool = False) -> ReplyKeyboardMarkup:
         ]
     )
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def text_input_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup([[KeyboardButton(STOP)]], resize_keyboard=True)

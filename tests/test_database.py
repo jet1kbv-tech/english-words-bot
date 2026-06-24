@@ -104,3 +104,30 @@ class ProgressCorrectionTests(unittest.TestCase):
         self.assertEqual(progress["times_seen"], 1)
         self.assertEqual(progress["times_remembered"], 0)
         self.assertEqual(progress["times_forgotten"], 1)
+
+class ForgottenCorrectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.user = self.db.upsert_user(4, "typo", "Typo")
+        self.db.add_word(self.user["id"], "receipt", "чек", None, None)
+        self.word = self.db.list_words(self.user["id"])[0]
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_correct_forgotten_to_remembered_does_not_increment_seen_again(self) -> None:
+        self.db.update_progress(self.user["id"], self.word["id"], remembered=False)
+
+        self.db.correct_forgotten_to_remembered(self.user["id"], self.word["id"])
+
+        progress = self.db.fetchone(
+            "SELECT * FROM word_progress WHERE user_id = ? AND word_id = ?",
+            (self.user["id"], self.word["id"]),
+        )
+        self.assertEqual(progress["score"], 2)
+        self.assertEqual(progress["times_seen"], 1)
+        self.assertEqual(progress["times_remembered"], 1)
+        self.assertEqual(progress["times_forgotten"], 0)

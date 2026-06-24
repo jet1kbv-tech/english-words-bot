@@ -271,6 +271,25 @@ class Database:
             (now, user_id, word_id),
         )
 
+    def correct_forgotten_to_remembered(self, user_id: int, word_id: int) -> None:
+        """Turn one already-counted negative answer into a positive answer.
+
+        The card was already marked as seen by update_progress(..., False), so this
+        correction intentionally leaves times_seen unchanged.
+        """
+        now = utc_now()
+        self.execute(
+            """
+            UPDATE word_progress
+            SET score = score + 2,
+                times_remembered = times_remembered + 1,
+                times_forgotten = MAX(times_forgotten - 1, 0),
+                updated_at = ?
+            WHERE user_id = ? AND word_id = ?
+            """,
+            (now, user_id, word_id),
+        )
+
 
     def update_progress(self, user_id: int, word_id: int, remembered: bool | None) -> None:
         now = utc_now()
