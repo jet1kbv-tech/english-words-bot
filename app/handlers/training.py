@@ -19,7 +19,6 @@ CARD_DIRECTIONS = (EN_TO_RU, RU_TO_EN)
 GAME_SESSION_SIZE = 10
 SELF_CHECK = "self_check"
 TEXT_INPUT = "text_input"
-GAME_TASK_TYPES = (SELF_CHECK, TEXT_INPUT)
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 
 
@@ -79,13 +78,6 @@ def _card_direction(session: dict, index: int) -> str:
     while len(directions) <= index:
         directions.append(random.choice(CARD_DIRECTIONS))
     return directions[index]
-
-
-def _game_task_type(session: dict, index: int) -> str:
-    task_types = session.setdefault("task_types", [])
-    while len(task_types) <= index:
-        task_types.append(random.choices(GAME_TASK_TYPES, weights=(70, 30), k=1)[0])
-    return task_types[index]
 
 
 def _normalize_answer(value: str) -> str:
@@ -179,7 +171,6 @@ async def start_game_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["training"] = {
         "words": words,
         "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
-        "task_types": [random.choices(GAME_TASK_TYPES, weights=(70, 30), k=1)[0] for _ in words],
         "index": 0,
         "exchange": False,
         "game": True,
@@ -190,7 +181,7 @@ async def start_game_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "forgotten_count": 0,
         "skipped": 0,
     }
-    await update.effective_message.reply_text("🎮 Игра на 10 слов начинается!", reply_markup=training_keyboard(game=True))
+    await update.effective_message.reply_text("🎮 Игра на 10 слов начинается!", reply_markup=text_input_keyboard())
     await send_current_card(update, context)
 
 
@@ -255,7 +246,7 @@ async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     session.pop("last_negative_text_answer", None)
     word = words[index]
     direction = _card_direction(session, index)
-    task_type = _game_task_type(session, index) if session.get("game") else SELF_CHECK
+    task_type = TEXT_INPUT if session.get("game") else SELF_CHECK
     session.pop("awaiting_text_input", None)
     if task_type == TEXT_INPUT:
         session["awaiting_text_input"] = {"index": index, "direction": direction}
