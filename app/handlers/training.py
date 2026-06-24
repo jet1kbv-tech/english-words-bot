@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from app.ai import AIService
 from app.database import Database
 from app.handlers.start import require_user
 from app.keyboards import answer_keyboard, main_menu_keyboard, training_keyboard
@@ -91,6 +92,75 @@ def _format_answer(word: dict, direction: str, prefix: str | None = None, extra_
     if extra_status:
         parts.append(extra_status)
     return "\n\n".join(parts)
+
+
+
+def _expected_answer(word: dict, direction: str) -> str:
+    return word["translation"] if direction == EN_TO_RU else word["english"]
+
+
+def _prompt_text(word: dict, direction: str) -> str:
+    return word["english"] if direction == EN_TO_RU else word["translation"]
+
+
+async def check_text_game_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Handle free-text answers only during the 10-word game."""
+    session = _session(context)
+    if not session.get("game") or update.effective_message is None or update.effective_message.text is None:
+        return False
+
+    user = await require_user(update, context)
+    words = session.get("words", [])
+    index = session.get("index", 0)
+    if user is None:
+        return True
+    if not words or index >= len(words):
+        await update.effective_message.reply_text("Активной игры нет.", reply_markup=main_menu_keyboard())
+        return True
+
+    word = words[index]
+    db: Database = context.application.bot_data["db"]
+    if db.fetchone("SELECT 1 FROM words WHERE id = ?", (word["id"],)) is None:
+        session["index"] = index + 1
+        await update.effective_message.reply_text("Эта карточка была удалена, пропускаем её.")
+        await send_current_card(update, context)
+        return True
+
+    direction = _card_direction(session, index)
+    ai_service: AIService = context.application.bot_data["ai_service"]
+    result = await ai_service.check_answer(
+        prompt=_prompt_text(word, direction),
+        expected_answer=_expected_answer(word, direction),
+        user_answer=update.effective_message.text.strip(),
+    )
+
+    db.update_progress(user["id"], word["id"], result.is_correct)
+    session["index"] = index + 1
+    if result.is_correct:
+        session["known"] = int(session.get("known", 0)) + 1
+        prefix = "✅ Знаю"
+        session["last_positive_answer"] = {
+            "word_id": word["id"],
+            "index": index,
+            "direction": direction,
+            "exchange": False,
+            "game": True,
+            "corrected": False,
+        }
+    else:
+        session["unknown"] = int(session.get("unknown", 0)) + 1
+        session.pop("last_positive_answer", None)
+        prefix = "❌ Не знаю"
+
+    status_parts = []
+    if result.feedback:
+        status_parts.append(result.feedback)
+    status_parts.append("Проверено AI" if result.used_ai else "AI недоступен — проверил простым сравнением")
+    await update.effective_message.reply_text(
+        _format_answer(word, direction, prefix=prefix, extra_status="\n".join(status_parts)),
+        reply_markup=answer_keyboard(can_correct=result.is_correct),
+    )
+    return True
 
 
 def _today_moscow() -> str:

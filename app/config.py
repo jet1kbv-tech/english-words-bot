@@ -14,6 +14,10 @@ class Settings:
     log_level: str
     allowed_usernames: frozenset[str]
     display_names: dict[str, str]
+    ai_provider: str
+    ai_model: str
+    polza_base_url: str
+    polza_api_key: str
 
 
 def load_settings() -> Settings:
@@ -28,4 +32,8 @@ def load_settings() -> Settings:
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         allowed_usernames=frozenset({"wp_bvv", "privetnormalno"}),
         display_names={"wp_bvv": "Вова", "privetnormalno": "Саша"},
+        ai_provider=os.getenv("AI_PROVIDER", "polza").strip() or "polza",
+        ai_model=os.getenv("AI_MODEL", "deepseek/deepseek-v4-flash").strip() or "deepseek/deepseek-v4-flash",
+        polza_base_url=os.getenv("POLZA_BASE_URL", "https://polza.ai/api/v1").strip() or "https://polza.ai/api/v1",
+        polza_api_key=os.getenv("POLZA_API_KEY", "").strip(),
     )
