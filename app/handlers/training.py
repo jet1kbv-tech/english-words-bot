@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from app.database import Database
+from app.ai.service import check_text_answer
 from app.handlers.start import require_user
 from app.keyboards import answer_keyboard, main_menu_keyboard, text_input_keyboard, training_keyboard
 
@@ -390,7 +391,16 @@ async def handle_text_input_answer(update: Update, context: ContextTypes.DEFAULT
 
     word = words[index]
     direction = pending.get("direction") or _card_direction(session, index)
-    remembered = _is_text_answer_correct(word, direction, update.effective_message.text or "")
+    user_answer = update.effective_message.text or ""
+    ai_result = None
+    if session.get("game"):
+        ai_result = await check_text_answer(
+            english=word["english"],
+            translation=word["translation"],
+            direction=direction,
+            user_answer=user_answer,
+        )
+    remembered = ai_result.is_correct if ai_result is not None else _is_text_answer_correct(word, direction, user_answer)
     db: Database = context.application.bot_data["db"]
     db.update_progress(user["id"], word["id"], remembered)
     session.pop("awaiting_text_input", None)
@@ -406,6 +416,9 @@ async def handle_text_input_answer(update: Update, context: ContextTypes.DEFAULT
         session["last_negative_text_answer"] = {"word_id": word["id"], "index": index, "direction": direction, "corrected": False}
         reply_markup = answer_keyboard(can_confirm_correct=True)
         prefix = "❌ Не совсем"
+
+    if ai_result is not None and ai_result.feedback:
+        prefix = f"{prefix}\n{ai_result.feedback}"
 
     await update.effective_message.reply_text(_format_full_answer(word, prefix=prefix), reply_markup=reply_markup)
     return True
