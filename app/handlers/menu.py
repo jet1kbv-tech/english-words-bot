@@ -3,7 +3,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from app.handlers.training import correct_last_positive_answer, mark_card, send_current_card, show_progress, show_translation, start_exchange, start_game_session, start_training, stop_training
+from app.handlers.training import check_text_game_answer, correct_last_positive_answer, mark_card, send_current_card, show_progress, show_translation, start_exchange, start_game_session, start_training, stop_training
 from app.handlers.words import show_dictionary
 from app.keyboards import DONT_KNOW, FORGET, GAME_SESSION, KNOW, MISTAKE, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
 
@@ -36,5 +36,7 @@ async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await stop_training(update, context)
     elif text == PROGRESS:
         await show_progress(update, context)
+    elif await check_text_game_answer(update, context):
+        return
     else:
         await update.effective_message.reply_text("Не понял команду. Выберите действие в меню.", reply_markup=main_menu_keyboard())

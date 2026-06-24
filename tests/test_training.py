@@ -1,6 +1,7 @@
 import unittest
 
-from app.handlers.training import card_weight
+from app.ai import AnswerCheckResult, simple_check_answer
+from app.handlers.training import build_game_session_words, card_weight
 
 
 class TrainingWeightTests(unittest.TestCase):
@@ -20,12 +21,6 @@ class TrainingWeightTests(unittest.TestCase):
                 self.assertEqual(card_weight(score), expected_weight)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-from app.handlers.training import build_game_session_words
-
-
 class GameSessionSelectionTests(unittest.TestCase):
     def test_game_session_limits_to_ten_and_includes_strong_review(self) -> None:
         words = []
@@ -40,3 +35,34 @@ class GameSessionSelectionTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 10)
         self.assertTrue(any(word["progress_score"] == 5 for word in selected))
+
+
+class SimpleAnswerCheckTests(unittest.TestCase):
+    def test_simple_check_accepts_exact_case_insensitive_answer(self) -> None:
+        result = simple_check_answer("Hello", " hello ")
+
+        self.assertTrue(result.is_correct)
+        self.assertFalse(result.used_ai)
+
+    def test_simple_check_accepts_comma_separated_variant(self) -> None:
+        result = simple_check_answer("привет, здравствуй", "Здравствуй")
+
+        self.assertTrue(result.is_correct)
+
+    def test_simple_check_rejects_different_answer(self) -> None:
+        result = simple_check_answer("hello", "bye")
+
+        self.assertFalse(result.is_correct)
+
+
+class AnswerCheckResultTests(unittest.TestCase):
+    def test_ai_result_can_mark_provider_usage(self) -> None:
+        result = AnswerCheckResult(is_correct=True, feedback="ок", used_ai=True)
+
+        self.assertTrue(result.is_correct)
+        self.assertEqual(result.feedback, "ок")
+        self.assertTrue(result.used_ai)
+
+
+if __name__ == "__main__":
+    unittest.main()

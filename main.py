@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from telegram import Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, filters
 
+from app.ai import PolzaProvider
 from app.config import load_settings
 from app.database import Database
 from app.handlers.menu import menu_message
@@ -31,6 +32,11 @@ def build_application() -> Application:
     application = Application.builder().token(settings.bot_token).build()
     application.bot_data["settings"] = settings
     application.bot_data["db"] = db
+    application.bot_data["ai_provider"] = PolzaProvider(
+        api_key=settings.polza_api_key,
+        base_url=settings.polza_base_url,
+        model=settings.ai_model,
+    )
     if application.job_queue is not None:
         application.job_queue.run_daily(
             daily_reminder,
