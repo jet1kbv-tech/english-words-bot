@@ -4,15 +4,22 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from app.handlers.training import check_text_game_answer, correct_last_positive_answer, mark_card, send_current_card, show_progress, show_translation, start_exchange, start_game_session, start_training, stop_training
-from app.handlers.words import show_dictionary
-from app.keyboards import DONT_KNOW, FORGET, GAME_SESSION, KNOW, MISTAKE, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
+from app.handlers.words import add_word_start, bulk_add_words_start, show_dictionary
+from app.keyboards import ADD_WORD, BULK_ADD_WORDS, DONT_KNOW, FORGET, GAME_SESSION, KNOW, MAIN_MENU, MISTAKE, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
 
 
 async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message is None:
         return
     text = update.effective_message.text
-    if text == MY_WORDS:
+    if text == MAIN_MENU:
+        context.user_data.pop("training", None)
+        await update.effective_message.reply_text("Главное меню", reply_markup=main_menu_keyboard())
+    elif text == ADD_WORD:
+        await add_word_start(update, context)
+    elif text == BULK_ADD_WORDS:
+        await bulk_add_words_start(update, context)
+    elif text == MY_WORDS:
         await show_dictionary(update, context)
     elif text == WORD_EXCHANGE:
         await start_exchange(update, context)

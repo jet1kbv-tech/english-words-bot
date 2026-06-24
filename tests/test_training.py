@@ -2,6 +2,7 @@ import unittest
 
 from app.ai import AnswerCheckResult, simple_check_answer
 from app.handlers.training import build_game_session_words, card_weight
+from app.keyboards import ADD_WORD, BULK_ADD_WORDS, GAME_SESSION, MAIN_MENU, MY_CARDS, MY_WORDS, PROGRESS, WORD_EXCHANGE, main_menu_keyboard
 
 
 class TrainingWeightTests(unittest.TestCase):
@@ -35,6 +36,26 @@ class GameSessionSelectionTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 10)
         self.assertTrue(any(word["progress_score"] == 5 for word in selected))
+
+
+class MainMenuKeyboardTests(unittest.TestCase):
+    def test_main_menu_contains_all_expected_actions(self) -> None:
+        keyboard = main_menu_keyboard().keyboard
+        button_texts = [button.text for row in keyboard for button in row]
+
+        self.assertEqual(
+            button_texts,
+            [
+                MAIN_MENU,
+                ADD_WORD,
+                BULK_ADD_WORDS,
+                MY_WORDS,
+                WORD_EXCHANGE,
+                MY_CARDS,
+                GAME_SESSION,
+                PROGRESS,
+            ],
+        )
 
 
 class SimpleAnswerCheckTests(unittest.TestCase):
