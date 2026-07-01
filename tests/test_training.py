@@ -1,6 +1,6 @@
 import unittest
 
-from app.handlers.training import EN_TO_RU, RU_TO_EN, _is_text_answer_correct, _normalize_answer, build_game_session_words, card_weight
+from app.handlers.training import EN_TO_RU, RU_TO_EN, _is_text_answer_correct, _normalize_answer, build_game_session_words, build_mistake_session_words, card_weight
 
 
 class TrainingWeightTests(unittest.TestCase):
@@ -38,6 +38,32 @@ class GameSessionSelectionTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 10)
         self.assertTrue(any(word["progress_score"] == 5 for word in selected))
+
+
+class MistakeSessionSelectionTests(unittest.TestCase):
+    def test_mistake_session_prioritizes_low_score_and_forgotten_words(self) -> None:
+        words = [
+            {"id": 1, "progress_score": 5, "times_remembered": 5, "times_forgotten": 1},
+            {"id": 2, "progress_score": 1, "times_remembered": 3, "times_forgotten": 0},
+            {"id": 3, "progress_score": 4, "times_remembered": 1, "times_forgotten": 3},
+        ]
+
+        selected = build_mistake_session_words(words, limit=2)
+        selected_ids = {word["id"] for word in selected}
+
+        self.assertEqual(selected_ids, {2, 3})
+
+    def test_mistake_session_fills_from_smart_review_when_needed(self) -> None:
+        words = [
+            {"id": 1, "progress_score": 0, "times_remembered": 0, "times_forgotten": 1},
+            {"id": 2, "progress_score": None, "times_remembered": None, "times_forgotten": None},
+            {"id": 3, "progress_score": 5, "times_remembered": 5, "times_forgotten": 0},
+        ]
+
+        selected = build_mistake_session_words(words, limit=3)
+
+        self.assertEqual(len(selected), 3)
+        self.assertIn(1, {word["id"] for word in selected})
 
 
 class TextInputAnswerTests(unittest.TestCase):
