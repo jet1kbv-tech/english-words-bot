@@ -290,6 +290,23 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
         return
     word = words[index]
     if session.get("awaiting_text_input"):
+        if session.get("game") and remembered is False:
+            direction = session["awaiting_text_input"].get("direction") or _card_direction(session, index)
+            db: Database = context.application.bot_data["db"]
+            if db.fetchone("SELECT 1 FROM words WHERE id = ?", (word["id"],)) is None:
+                session.pop("awaiting_text_input", None)
+                session["index"] = index + 1
+                await update.effective_message.reply_text("Эта карточка была удалена, пропускаем её.")
+                await send_current_card(update, context)
+                return
+            db.update_progress(user["id"], word["id"], remembered=False)
+            session.pop("awaiting_text_input", None)
+            session.pop("last_positive_answer", None)
+            session.pop("last_negative_text_answer", None)
+            session["index"] = index + 1
+            _increment_game_counter(session, "forgotten_count")
+            await update.effective_message.reply_text(_format_full_answer(word, prefix="❌ Не знаю"), reply_markup=answer_keyboard())
+            return
         await update.effective_message.reply_text("Сейчас нужно написать ответ в чат или закончить игру.", reply_markup=text_input_keyboard())
         return
     db: Database = context.application.bot_data["db"]
