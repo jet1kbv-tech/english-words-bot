@@ -76,7 +76,18 @@ class StudySessionTests(unittest.TestCase):
         activity = self.db.record_daily_activity(self.user["id"], "2026-06-18", 10, 7, 2, 1)
         self.assertEqual(activity["cards_reviewed"], 10)
         self.assertEqual(activity["streak_days"], 1)
-        self.assertEqual(activity["day_level"], "Разогрев")
+        self.assertEqual(activity["day_level"], "Цель выполнена")
+        self.assertEqual(activity["xp_earned"], 0)
+
+    def test_daily_activity_accumulates_xp(self) -> None:
+        first = self.db.record_daily_activity(self.user["id"], "2026-06-18", 7, 5, 2, 0, 75)
+        self.assertEqual(first["xp_earned"], 75)
+        self.assertEqual(first["day_level"], "Разогрев")
+
+        second = self.db.record_daily_activity(self.user["id"], "2026-06-18", 3, 2, 1, 0, 49)
+        self.assertEqual(second["cards_reviewed"], 10)
+        self.assertEqual(second["xp_earned"], 124)
+        self.assertEqual(second["day_level"], "Цель выполнена")
 
 class ProgressCorrectionTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -82,8 +82,9 @@ class Database:
                 known_cards INTEGER NOT NULL DEFAULT 0,
                 unknown_cards INTEGER NOT NULL DEFAULT 0,
                 skipped_cards INTEGER NOT NULL DEFAULT 0,
+                xp_earned INTEGER NOT NULL DEFAULT 0,
                 streak_days INTEGER NOT NULL DEFAULT 0,
-                day_level TEXT NOT NULL DEFAULT 'Новичок',
+                day_level TEXT NOT NULL DEFAULT 'Разогрев',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -92,6 +93,12 @@ class Database:
             """
         )
         self._connection.commit()
+        self._ensure_daily_activity_xp_column()
+
+    def _ensure_daily_activity_xp_column(self) -> None:
+        columns = {row["name"] for row in self.fetchall("PRAGMA table_info(daily_activity)")}
+        if "xp_earned" not in columns:
+            self.execute("ALTER TABLE daily_activity ADD COLUMN xp_earned INTEGER NOT NULL DEFAULT 0")
 
     def execute(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         cursor = self._connection.execute(query, tuple(params))
@@ -351,14 +358,12 @@ class Database:
 
     def day_level(self, cards_reviewed: int) -> str:
         if cards_reviewed >= 30:
-            return "Легенда"
+            return "Легенда дня"
         if cards_reviewed >= 20:
-            return "Профи"
+            return "Сильный день"
         if cards_reviewed >= 10:
-            return "Разогрев"
-        if cards_reviewed > 0:
-            return "Старт"
-        return "Новичок"
+            return "Цель выполнена"
+        return "Разогрев"
 
     def _previous_date(self, activity_date: str) -> str:
         from datetime import date, timedelta
@@ -373,6 +378,7 @@ class Database:
         known_cards: int,
         unknown_cards: int,
         skipped_cards: int,
+        xp_earned: int = 0,
     ) -> sqlite3.Row:
         now = utc_now()
         previous = self.get_daily_activity(user_id, self._previous_date(activity_date))
@@ -383,17 +389,21 @@ class Database:
             """
             INSERT INTO daily_activity (
                 user_id, activity_date, cards_reviewed, known_cards, unknown_cards,
-                skipped_cards, streak_days, day_level, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                skipped_cards, xp_earned, streak_days, day_level, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, activity_date) DO UPDATE SET
                 cards_reviewed = cards_reviewed + excluded.cards_reviewed,
                 known_cards = known_cards + excluded.known_cards,
                 unknown_cards = unknown_cards + excluded.unknown_cards,
                 skipped_cards = skipped_cards + excluded.skipped_cards,
+                xp_earned = xp_earned + excluded.xp_earned,
                 streak_days = excluded.streak_days,
                 updated_at = excluded.updated_at
             """,
-            (user_id, activity_date, cards_reviewed, known_cards, unknown_cards, skipped_cards, base_streak, "Новичок", now, now),
+            (
+                user_id, activity_date, cards_reviewed, known_cards, unknown_cards,
+                skipped_cards, xp_earned, base_streak, "Разогрев", now, now,
+            ),
         )
         row = self.get_daily_activity(user_id, activity_date)
         if row is None:
