@@ -189,7 +189,10 @@ class Database:
     def list_training_words(self, user_id: int) -> list[sqlite3.Row]:
         return self.fetchall(
             """
-            SELECT words.*, users.display_name AS owner_name, word_progress.score AS progress_score
+            SELECT words.*, users.display_name AS owner_name,
+                   word_progress.score AS progress_score,
+                   word_progress.times_remembered AS times_remembered,
+                   word_progress.times_forgotten AS times_forgotten
             FROM words
             JOIN users ON users.id = words.owner_user_id
             LEFT JOIN word_progress ON word_progress.word_id = words.id AND word_progress.user_id = ?

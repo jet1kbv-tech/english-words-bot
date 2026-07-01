@@ -6,6 +6,7 @@ MY_WORDS = "📚 Мой словарь"
 WORD_EXCHANGE = "🔄 Обмен словами"
 MY_CARDS = "🎯 Мои карточки"
 GAME_SESSION = "🎮 Игра на 10 слов"
+MY_MISTAKES = "😵 Мои ошибки"
 PROGRESS = "📊 Прогресс"
 SHOW_TRANSLATION = "👀 Показать ответ"
 REMEMBER = "✅ Помню"
@@ -29,7 +30,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
             [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
             [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
-            [KeyboardButton(PROGRESS)],
+            [KeyboardButton(MY_MISTAKES), KeyboardButton(PROGRESS)],
         ],
         resize_keyboard=True,
     )

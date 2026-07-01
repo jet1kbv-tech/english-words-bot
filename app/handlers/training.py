@@ -69,6 +69,41 @@ def build_game_session_words(words: list, limit: int = GAME_SESSION_SIZE) -> lis
     return selected[:limit]
 
 
+
+def _word_int(word: dict, key: str, default: int = 0) -> int:
+    value = word[key] if key in word.keys() else default
+    return default if value is None else int(value)
+
+
+def _is_mistake_word(word: dict) -> bool:
+    score = word["progress_score"] if "progress_score" in word.keys() else None
+    if score is not None and int(score) <= 1:
+        return True
+    return _word_int(word, "times_forgotten") > _word_int(word, "times_remembered")
+
+
+def _mistake_severity(word: dict) -> tuple[int, int, int]:
+    score = word["progress_score"] if "progress_score" in word.keys() else None
+    forgotten = _word_int(word, "times_forgotten")
+    remembered = _word_int(word, "times_remembered")
+    score_priority = 100 if score is None else max(0, 10 - int(score))
+    return (forgotten - remembered, forgotten, score_priority)
+
+
+def build_mistake_session_words(words: list, limit: int = GAME_SESSION_SIZE) -> list:
+    """Pick a game session focused on the user's weakest personal words."""
+    mistake_words = [word for word in words if _is_mistake_word(word)]
+    mistake_words.sort(key=_mistake_severity, reverse=True)
+
+    selected = mistake_words[:limit]
+    if len(selected) < limit:
+        selected_ids = {word["id"] for word in selected}
+        fallback_pool = [word for word in words if word["id"] not in selected_ids]
+        selected.extend(build_game_session_words(fallback_pool, limit - len(selected)))
+
+    random.shuffle(selected)
+    return selected[:limit]
+
 def _session(context: ContextTypes.DEFAULT_TYPE) -> dict:
     return context.user_data.setdefault("training", {})
 
@@ -185,6 +220,35 @@ async def start_game_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await send_current_card(update, context)
 
 
+async def start_mistakes_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = await require_user(update, context)
+    if user is None or update.effective_message is None:
+        return
+    db: Database = context.application.bot_data["db"]
+    words = db.list_training_words(user["id"])
+    if not words:
+        await update.effective_message.reply_text("Пока нет слов для разбора ошибок. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
+        return
+    words = build_mistake_session_words(words)
+    session_id = db.start_study_session(user["id"], len(words))
+    context.user_data["training"] = {
+        "words": words,
+        "directions": [random.choice(CARD_DIRECTIONS) for _ in words],
+        "index": 0,
+        "exchange": False,
+        "game": True,
+        "mistakes": True,
+        "session_id": session_id,
+        "known": 0,
+        "unknown": 0,
+        "remembered_count": 0,
+        "forgotten_count": 0,
+        "skipped": 0,
+    }
+    await update.effective_message.reply_text("😵 Разбор ошибок начинается!", reply_markup=text_input_keyboard())
+    await send_current_card(update, context)
+
+
 async def start_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await require_user(update, context)
     if user is None or update.effective_message is None:
@@ -220,8 +284,8 @@ async def _finish_game(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
     activity = db.record_daily_activity(user["id"], _today_moscow(), known + unknown, known, unknown, skipped)
     context.user_data.pop("training", None)
     await update.effective_message.reply_text(
-        "🎮 Игра завершена!\n"
-        f"• карточек: {total}\n"
+        ("😵 Разбор ошибок завершён!\n" if session.get("mistakes") else "🎮 Игра завершена!\n")
+        + f"• карточек: {total}\n"
         f"• знаю: {known}\n"
         f"• не знаю: {unknown}\n"
         f"• пропущено: {skipped}\n"
