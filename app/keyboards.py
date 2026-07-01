@@ -64,4 +64,4 @@ def answer_keyboard(can_correct: bool = False, can_confirm_correct: bool = False
 
 
 def text_input_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([[KeyboardButton(STOP)]], resize_keyboard=True)
+    return ReplyKeyboardMarkup([[KeyboardButton(DONT_KNOW)], [KeyboardButton(STOP)]], resize_keyboard=True)
