@@ -20,6 +20,10 @@ GAME_SESSION_SIZE = 10
 SELF_CHECK = "self_check"
 TEXT_INPUT = "text_input"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+DAILY_GOAL_CARDS = 10
+XP_CORRECT_ANSWER = 10
+XP_WRONG_ANSWER = 2
+XP_SESSION_FINISHED = 25
 
 
 def card_weight(progress_score: int | None) -> int:
@@ -137,6 +141,14 @@ def _today_moscow() -> str:
     return datetime.now(MOSCOW_TZ).date().isoformat()
 
 
+def _add_session_xp(session: dict, amount: int) -> None:
+    session["xp_earned"] = max(int(session.get("xp_earned", 0)) + amount, 0)
+
+
+def _daily_goal_text(cards_reviewed: int) -> str:
+    return f"{cards_reviewed} / {DAILY_GOAL_CARDS} карточек"
+
+
 async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, only_mine: bool) -> None:
     user = await require_user(update, context)
     if user is None or update.effective_message is None:
@@ -180,6 +192,7 @@ async def start_game_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "remembered_count": 0,
         "forgotten_count": 0,
         "skipped": 0,
+        "xp_earned": 0,
     }
     await update.effective_message.reply_text("🎮 Игра на 10 слов начинается!", reply_markup=text_input_keyboard())
     await send_current_card(update, context)
@@ -215,9 +228,11 @@ async def _finish_game(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
     unknown = int(session.get("unknown", 0))
     skipped = int(session.get("skipped", 0))
     total = len(session.get("words", []))
+    _add_session_xp(session, XP_SESSION_FINISHED)
+    xp_earned = int(session.get("xp_earned", 0))
     if session.get("session_id"):
         db.finish_study_session(session["session_id"], known, unknown, skipped)
-    activity = db.record_daily_activity(user["id"], _today_moscow(), known + unknown, known, unknown, skipped)
+    activity = db.record_daily_activity(user["id"], _today_moscow(), known + unknown, known, unknown, skipped, xp_earned)
     context.user_data.pop("training", None)
     await update.effective_message.reply_text(
         "🎮 Игра завершена!\n"
@@ -225,8 +240,10 @@ async def _finish_game(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
         f"• знаю: {known}\n"
         f"• не знаю: {unknown}\n"
         f"• пропущено: {skipped}\n"
-        f"• streak: {activity['streak_days']} дн.\n"
-        f"• уровень дня: {activity['day_level']}",
+        f"⭐ XP за сессию: {xp_earned}\n"
+        f"🔥 Цель дня: {_daily_goal_text(activity['cards_reviewed'])}\n"
+        f"🏆 Статус дня: {activity['day_level']}\n"
+        f"• streak: {activity['streak_days']} дн.",
         reply_markup=main_menu_keyboard(),
     )
 
@@ -305,6 +322,7 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
             session.pop("last_negative_text_answer", None)
             session["index"] = index + 1
             _increment_game_counter(session, "forgotten_count")
+            _add_session_xp(session, XP_WRONG_ANSWER)
             await update.effective_message.reply_text(_format_full_answer(word, prefix="❌ Не знаю"), reply_markup=answer_keyboard())
             return
         await update.effective_message.reply_text("Сейчас нужно написать ответ в чат или закончить игру.", reply_markup=text_input_keyboard())
@@ -326,8 +344,12 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
 
     if remembered:
         _increment_game_counter(session, "remembered_count")
+        if session.get("game"):
+            _add_session_xp(session, XP_CORRECT_ANSWER)
     else:
         _increment_game_counter(session, "forgotten_count")
+        if session.get("game"):
+            _add_session_xp(session, XP_WRONG_ANSWER)
         session.pop("last_positive_answer", None)
 
     direction = _card_direction(session, index)
@@ -376,6 +398,8 @@ async def correct_last_positive_answer(update: Update, context: ContextTypes.DEF
         db.correct_remembered_to_forgotten(user["id"], word_id)
         _increment_game_counter(session, "remembered_count", -1)
         _increment_game_counter(session, "forgotten_count")
+        if correction.get("game"):
+            _add_session_xp(session, XP_WRONG_ANSWER - XP_CORRECT_ANSWER)
         if correction.get("exchange"):
             db.copy_word_to_user(word_id, user["id"])
         correction["corrected"] = True
@@ -417,11 +441,15 @@ async def handle_text_input_answer(update: Update, context: ContextTypes.DEFAULT
 
     if remembered:
         _increment_game_counter(session, "remembered_count")
+        if session.get("game"):
+            _add_session_xp(session, XP_CORRECT_ANSWER)
         reply_markup = answer_keyboard()
         prefix = "✅ Верно"
     else:
         _increment_game_counter(session, "forgotten_count")
-        session["last_negative_text_answer"] = {"word_id": word["id"], "index": index, "direction": direction, "corrected": False}
+        if session.get("game"):
+            _add_session_xp(session, XP_WRONG_ANSWER)
+        session["last_negative_text_answer"] = {"word_id": word["id"], "index": index, "direction": direction, "game": bool(session.get("game")), "corrected": False}
         reply_markup = answer_keyboard(can_confirm_correct=True)
         prefix = "❌ Не совсем"
 
@@ -452,6 +480,8 @@ async def correct_last_negative_text_answer(update: Update, context: ContextType
         db.correct_forgotten_to_remembered(user["id"], word_id)
         _increment_game_counter(session, "forgotten_count", -1)
         _increment_game_counter(session, "remembered_count")
+        if correction.get("game"):
+            _add_session_xp(session, XP_CORRECT_ANSWER - XP_WRONG_ANSWER)
         correction["corrected"] = True
 
     await update.effective_message.reply_text(_format_full_answer(word, prefix="Ок, исправил: отмечено как ✅ Знаю"), reply_markup=answer_keyboard())
@@ -474,13 +504,19 @@ async def show_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     summary = db.progress_summary(user["id"])
     activity = db.get_daily_activity(user["id"], _today_moscow())
     streak = activity["streak_days"] if activity else 0
-    day_level = activity["day_level"] if activity else "Новичок"
+    day_level = activity["day_level"] if activity else "Разогрев"
+    xp_today = activity["xp_earned"] if activity else 0
+    cards_today = activity["cards_reviewed"] if activity else 0
+    goal_done = "да" if cards_today >= DAILY_GOAL_CARDS else "нет"
     await update.effective_message.reply_text(
         "Ваш прогресс:\n"
         f"• добавлено слов: {db.count_words(user['id'])}\n"
         f"• всего доступно слов: {db.count_words()}\n"
         f"• карточек тренировали: {summary['trained_cards']}\n"
         f"• средний score: {summary['average_score']:.2f}\n"
+        f"• XP сегодня: {xp_today}\n"
+        f"• карточек сегодня: {cards_today}\n"
+        f"• цель дня выполнена: {goal_done}\n"
         f"• streak: {streak} дн.\n"
         f"• уровень дня: {day_level}",
         reply_markup=main_menu_keyboard(),
