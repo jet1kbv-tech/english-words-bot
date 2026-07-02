@@ -431,6 +431,17 @@ class Database:
             (lesson_id,),
         )
 
+    def get_lesson_word(self, lesson_id: int, word_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            """
+            SELECT words.*, lesson_words.lesson_id AS lesson_id, lesson_words.id AS lesson_word_id
+            FROM lesson_words
+            JOIN words ON words.id = lesson_words.word_id
+            WHERE lesson_words.lesson_id = ? AND lesson_words.word_id = ?
+            """,
+            (lesson_id, word_id),
+        )
+
     def add_lesson_words(self, lesson_id: int, words: list[str], owner_user_id: int | None = None) -> list[sqlite3.Row]:
         lesson = self.get_lesson(lesson_id)
         if lesson is None:

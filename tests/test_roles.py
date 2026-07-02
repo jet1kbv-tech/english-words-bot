@@ -3,7 +3,7 @@ import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
 from app.lesson_metadata import lesson_display_name
-from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.lesson_service import normalize_lesson_words_import
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
@@ -260,6 +260,65 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update.callback_query.edits, [])
         self.assertEqual(update.callback_query.message.replies, [])
 
+
+    async def test_words_list_shows_word_buttons_and_word_detail_flow(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt", "worth it", "stale"], self.teacher["id"])
+        words = self.db.list_lesson_words(lesson["id"])
+
+        open_update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(open_update, self.context)
+
+        self.assertIn("Всего слов: 3", open_update.callback_query.edits[-1][0])
+        buttons = [button.text for row in open_update.callback_query.edits[-1][1].inline_keyboard for button in row]
+        self.assertIn("receipt", buttons)
+        self.assertIn("worth it", buttons)
+        self.assertIn("stale", buttons)
+
+        detail_update = self._callback_update(f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{lesson['id']}:{words[0]['word_id']}")
+        await handle_teacher_lesson_callback(detail_update, self.context)
+
+        self.assertIn("📖 Word", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Lesson: Lesson 15 — Food", detail_update.callback_query.edits[-1][0])
+        self.assertIn("English: receipt", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Translation: —", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Example: —", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Topic: —", detail_update.callback_query.edits[-1][0])
+
+        back_update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(back_update, self.context)
+
+        self.assertIn("📖 Words", back_update.callback_query.edits[-1][0])
+        self.assertIn("• receipt", back_update.callback_query.edits[-1][0])
+
+    async def test_word_detail_missing_or_wrong_lesson_is_safe(self) -> None:
+        first_lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        second_lesson = self.db.create_teacher_lesson("Lesson 16 — Travel", self.teacher["id"])
+        self.db.add_lesson_words(first_lesson["id"], ["receipt"], self.teacher["id"])
+        word = self.db.list_lesson_words(first_lesson["id"])[0]
+
+        wrong_lesson_update = self._callback_update(f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{second_lesson['id']}:{word['word_id']}")
+        await handle_teacher_lesson_callback(wrong_lesson_update, self.context)
+
+        self.assertEqual(wrong_lesson_update.callback_query.edits[-1][0], "Word не найден.")
+
+        missing_update = self._callback_update(f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{first_lesson['id']}:999")
+        await handle_teacher_lesson_callback(missing_update, self.context)
+
+        self.assertEqual(missing_update.callback_query.edits[-1][0], "Word не найден.")
+
+    async def test_student_cannot_access_word_detail_callback(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word = self.db.list_lesson_words(lesson["id"])[0]
+        update = self._callback_update(
+            f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{lesson['id']}:{word['word_id']}", username="privetnormalno", user_id=103
+        )
+
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.edits, [])
+        self.assertEqual(update.callback_query.message.replies, [])
 
     async def test_teacher_import_words_preview_confirm_and_order(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 20 — Food", self.teacher["id"])
