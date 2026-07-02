@@ -11,7 +11,7 @@ class Role(Enum):
 
 
 def _normalize_username(username: str | None) -> str:
-    return (username or "").lstrip("@").casefold()
+    return (username or "").strip().lstrip("@").casefold()
 
 
 def _normalized_config_usernames(config: Any, attr_name: str) -> set[str]:
@@ -20,8 +20,9 @@ def _normalized_config_usernames(config: Any, attr_name: str) -> set[str]:
 
 
 class RoleResolver:
-    def __init__(self, config: Any) -> None:
+    def __init__(self, config: Any, db: Any | None = None) -> None:
         self.config = config
+        self.db = db
         self.admin_usernames = _normalized_config_usernames(config, "admin_usernames")
         self.teacher_usernames = _normalized_config_usernames(config, "teacher_usernames")
         self.allowed_usernames = _normalized_config_usernames(config, "allowed_usernames")
@@ -38,7 +39,9 @@ class RoleResolver:
         normalized_username = _normalize_username(username)
         if not normalized_username:
             return False
-        return normalized_username in self.allowed_usernames | self.admin_usernames | self.teacher_usernames
+        if normalized_username in self.allowed_usernames | self.admin_usernames | self.teacher_usernames:
+            return True
+        return bool(self.db is not None and self.db.is_active_student_access(normalized_username))
 
     @property
     def student_usernames(self) -> set[str]:
@@ -49,5 +52,5 @@ def get_user_role(username: str | None, config: Any) -> Role:
     return RoleResolver(config).role_for(username)
 
 
-def is_user_allowed(username: str | None, config: Any) -> bool:
-    return RoleResolver(config).is_allowed(username)
+def is_user_allowed(username: str | None, config: Any, db: Any | None = None) -> bool:
+    return RoleResolver(config, db).is_allowed(username)

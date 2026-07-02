@@ -22,6 +22,7 @@ TEACHER_STUDENTS = "👤 Ученики"
 TEACHER_PROGRESS = "📊 Прогресс ученика"
 TEACHER_IMPERSONATE = "👀 Режим ученика"
 TEACHER_LESSONS = "📚 Уроки"
+ADD_STUDENT = "➕ Добавить ученика"
 TEACHER_CREATE_LESSON = "➕ Создать урок"
 TEACHER_MY_LESSONS = "📋 Мои уроки"
 EXIT_STUDENT_MODE = "↩️ Выйти из режима ученика"
@@ -56,6 +57,7 @@ def admin_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(ADMIN_STUDENT_VIEW)],
             [KeyboardButton(ADMIN_TEACHER_VIEW)],
             [KeyboardButton(ADMIN_USERS)],
+            [KeyboardButton(ADD_STUDENT)],
             [KeyboardButton(ADMIN_MY_MENU)],
         ],
         resize_keyboard=True,
@@ -69,6 +71,7 @@ def teacher_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(TEACHER_PROGRESS)],
             [KeyboardButton(TEACHER_IMPERSONATE)],
             [KeyboardButton(TEACHER_LESSONS)],
+            [KeyboardButton(ADD_STUDENT)],
         ],
         resize_keyboard=True,
     )

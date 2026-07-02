@@ -10,7 +10,7 @@ from app.keyboards import main_menu_keyboard, teacher_menu_keyboard
 
 
 def normalize_username(username: str | None) -> str:
-    return (username or "").lstrip("@").casefold()
+    return (username or "").strip().lstrip("@").casefold()
 
 
 async def require_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -20,7 +20,7 @@ async def require_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db: Database = context.application.bot_data["db"]
     settings: Settings = context.application.bot_data["settings"]
     username = normalize_username(tg_user.username)
-    resolver = RoleResolver(settings)
+    resolver = RoleResolver(settings, db)
     impersonated_user_id = context.user_data.get("impersonated_user_id")
     if impersonated_user_id and resolver.role_for(username) in {Role.TEACHER, Role.ADMIN}:
         impersonated_user = db.get_user_by_id(int(impersonated_user_id))
@@ -31,7 +31,7 @@ async def require_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = db.get_user_by_telegram_id(tg_user.id)
     if user is not None:
         return user
-    if not is_user_allowed(username, settings):
+    if not is_user_allowed(username, settings, db):
         if update.effective_message:
             await update.effective_message.reply_text("Извините, этот бот доступен только Вове и Саше.")
         return None
@@ -45,13 +45,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     settings: Settings = context.application.bot_data["settings"]
     username = normalize_username(tg_user.username)
     existing_user = context.application.bot_data["db"].get_user_by_telegram_id(tg_user.id)
-    if existing_user is None and not is_user_allowed(username, settings):
+    if existing_user is None and not is_user_allowed(username, settings, context.application.bot_data["db"]):
         await update.effective_message.reply_text("Извините, доступ разрешён только @wp_bvv и @privetnormalno.")
         return
 
     display_name = existing_user["display_name"] if existing_user else settings.display_names.get(username, username)
     user = context.application.bot_data["db"].upsert_user(tg_user.id, username or existing_user["username"], display_name)
-    resolver = RoleResolver(settings)
+    resolver = RoleResolver(settings, context.application.bot_data["db"])
     role = resolver.role_for(username)
     if role is Role.TEACHER:
         context.user_data.pop("impersonated_user_id", None)
