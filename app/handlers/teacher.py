@@ -8,6 +8,7 @@ from app.config import Settings
 from app.database import Database
 from app.handlers.training import _today_moscow
 from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
+from app.lesson_metadata import lesson_display_name
 from app.lesson_repository import LessonRepository
 from app.lesson_service import LessonService
 from app.student_access_service import StudentAccessService
@@ -55,7 +56,7 @@ def _format_lessons_screen(lessons: list) -> str:
         return "📚 Lessons\n\nПока нет уроков.\n\nСоздайте первый урок."
     lines = ["📚 Lessons", ""]
     for index, lesson in enumerate(lessons, start=1):
-        lines.append(f"{index}. Lesson {lesson['id']} — {lesson['title']} — {_status_label(lesson['status'])}")
+        lines.append(f"{index}. {lesson_display_name(lesson)} — {_status_label(lesson['status'])}")
     return "\n".join(lines)
 
 
@@ -70,12 +71,22 @@ def _count(summary, key: str) -> int:
     return int(summary[key] or 0) if key in summary.keys() else 0
 
 
+def _optional_summary_value(summary, key: str) -> str:
+    if hasattr(summary, "keys") and key in summary.keys() and summary[key]:
+        return str(summary[key])
+    return "—"
+
+
 def _format_lesson_detail(summary) -> str:
     return "\n".join([
         "📚 Lesson",
         "",
-        f"Title: {summary['title']}",
+        f"Lesson: {lesson_display_name(summary)}",
         f"Status: {_status_label(summary['status'])}",
+        "",
+        f"Topic: {_optional_summary_value(summary, 'topic')}",
+        f"Level: {_optional_summary_value(summary, 'level')}",
+        f"Description: {_optional_summary_value(summary, 'description')}",
         "",
         f"📖 Words: {_count(summary, 'words_count')}",
         f"📝 Grammar: {_count(summary, 'grammar_count')}",
@@ -105,7 +116,7 @@ def _format_lesson_section(summary, section: str) -> str:
         "ai": ("🤖 AI Assistant", "Скоро здесь можно будет сгенерировать слова, упражнения, домашку и подсказки с помощью AI."),
     }
     title, description = descriptions[section]
-    return "\n".join([title, "", description, "", f"Lesson: {summary['title']}"])
+    return "\n".join([title, "", description, "", f"Lesson: {lesson_display_name(summary)}"])
 
 
 def _lesson_section_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
