@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import unittest
 
-from app.auth.roles import Role, get_user_role, is_user_allowed
+from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,10 @@ class RoleResolverTests(unittest.TestCase):
     def test_none_username_does_not_crash(self) -> None:
         self.assertEqual(get_user_role(None, self.settings), Role.STUDENT)
         self.assertFalse(is_user_allowed(None, self.settings))
+
+    def test_resolver_exposes_only_student_allowed_usernames(self) -> None:
+        resolver = RoleResolver(self.settings)
+        self.assertEqual(resolver.student_usernames, {"privetnormalno"})
 
 
 if __name__ == "__main__":

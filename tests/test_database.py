@@ -142,3 +142,31 @@ class ForgottenCorrectionTests(unittest.TestCase):
         self.assertEqual(progress["times_seen"], 1)
         self.assertEqual(progress["times_remembered"], 1)
         self.assertEqual(progress["times_forgotten"], 0)
+
+class TeacherDatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.student = self.db.upsert_user(10, "StudentOne", "Student One")
+        self.teacher = self.db.upsert_user(11, "teacher", "Teacher")
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_list_student_users_filters_to_allowed_student_usernames(self) -> None:
+        students = self.db.list_student_users({"studentone"})
+
+        self.assertEqual([student["username"] for student in students], ["StudentOne"])
+
+    def test_list_weak_words_orders_low_score_and_forgotten_first(self) -> None:
+        self.db.add_word(self.student["id"], "easy", "лёгкий", None, None)
+        self.db.add_word(self.student["id"], "hard", "сложный", None, None)
+        words = {word["english"]: word for word in self.db.list_words(self.student["id"])}
+        self.db.update_progress(self.student["id"], words["easy"]["id"], remembered=True)
+        self.db.update_progress(self.student["id"], words["hard"]["id"], remembered=False)
+
+        weak_words = self.db.list_weak_words(self.student["id"], limit=10)
+
+        self.assertEqual(weak_words[0]["english"], "hard")

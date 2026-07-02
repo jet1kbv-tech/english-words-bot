@@ -445,3 +445,15 @@ python -m unittest
 
 Если менялась логика выбора карточек или проверки ответа — дополнить `tests/test_training.py`.
 Если менялась schema или DB behavior — дополнить `tests/test_database.py`.
+
+## Teacher role
+
+Минимальный teacher layer живёт поверх текущего main flow. `RoleResolver` в `app/auth/roles.py` определяет роли из настроек: admin, teacher и student. Teacher не получает admin-функций.
+
+`app/handlers/teacher.py` обрабатывает только teacher menu:
+
+- список учеников строится из уже созданных пользователей БД, чей username входит в student subset `allowed_usernames`; admin/teacher исключены;
+- прогресс ученика читается из существующих таблиц `words`, `daily_activity` и `word_progress`;
+- режим ученика сохраняет `impersonated_user_id` в `context.user_data`. `require_user()` возвращает выбранного student user для действий, но не меняет telegram_id teacher и не делает `upsert_user()` для ученика, поэтому дубли пользователей не создаются.
+
+Остальной student game flow остаётся прежним: handlers слов, тренировок и игр продолжают работать с результатом `require_user()`.

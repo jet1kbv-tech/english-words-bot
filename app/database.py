@@ -133,6 +133,19 @@ class Database:
     def list_users(self) -> list[sqlite3.Row]:
         return self.fetchall("SELECT * FROM users ORDER BY id")
 
+    def list_student_users(self, usernames: Iterable[str]) -> list[sqlite3.Row]:
+        normalized = sorted({username.casefold().lstrip("@") for username in usernames if username})
+        if not normalized:
+            return []
+        placeholders = ",".join("?" for _ in normalized)
+        return self.fetchall(
+            f"SELECT * FROM users WHERE lower(username) IN ({placeholders}) ORDER BY display_name, username",
+            normalized,
+        )
+
+    def get_user_by_id(self, user_id: int) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM users WHERE id = ?", (user_id,))
+
     def get_user_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
 
@@ -425,4 +438,20 @@ class Database:
         return self.fetchone(
             "SELECT * FROM daily_activity WHERE user_id = ? AND activity_date = ?",
             (user_id, activity_date),
+        )
+
+    def list_weak_words(self, user_id: int, limit: int = 10) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT words.*,
+                   COALESCE(word_progress.score, 0) AS progress_score,
+                   COALESCE(word_progress.times_forgotten, 0) AS times_forgotten,
+                   COALESCE(word_progress.times_remembered, 0) AS times_remembered
+            FROM words
+            LEFT JOIN word_progress ON word_progress.word_id = words.id AND word_progress.user_id = ?
+            WHERE words.owner_user_id = ?
+            ORDER BY progress_score ASC, times_forgotten DESC, times_remembered ASC, words.created_at DESC
+            LIMIT ?
+            """,
+            (user_id, user_id, limit),
         )
