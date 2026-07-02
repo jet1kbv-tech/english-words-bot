@@ -11,7 +11,8 @@
 ## 2. Высокоуровневые компоненты
 
 - `main.py` — сборка Telegram `Application`, регистрация handlers, создание `Database`, запуск polling, обработчик глобальных ошибок.
-- `app/config.py` — загрузка `.env`, токена бота, пути к SQLite, уровня логирования, списка разрешённых usernames и display names.
+- `app/config.py` — загрузка `.env`, токена бота, пути к SQLite, уровня логирования, списков разрешённых/role-based usernames и display names.
+- `app/auth/roles.py` — RoleResolver: enum ролей и централизованная проверка доступа по username.
 - `app/database.py` — SQLite schema и все операции над пользователями, словами, прогрессом, игровыми сессиями и daily activity.
 - `app/keyboards.py` — все тексты кнопок и reply keyboard layouts.
 - `app/handlers/start.py` — авторизация пользователя и `/start`.
@@ -89,12 +90,27 @@
 
 ### 4.1 Пользовательские роли
 
-В коде нет отдельной RBAC-модели. Есть два разрешённых Telegram username:
+Роли централизованы в `app/auth/roles.py`. RoleResolver содержит enum `Role`:
 
-- `wp_bvv` → display name `Вова`
-- `privetnormalno` → display name `Саша`
+- `ADMIN`
+- `TEACHER`
+- `STUDENT`
 
-Доступ к боту разрешён только этим пользователям. Все остальные получают отказ при `/start` или при попытке пройти `require_user()`.
+`get_user_role(username, config)` нормализует Telegram username без `@` и сравнивает его case-insensitive:
+
+1. username из `admin_usernames` получает `ADMIN`;
+2. username из `teacher_usernames` получает `TEACHER`;
+3. все остальные usernames получают `STUDENT`.
+
+`is_user_allowed(username, config)` разрешает доступ, если username есть в объединении `allowed_usernames`, `admin_usernames` и `teacher_usernames`. `None` и пустые usernames не падают и не получают доступ.
+
+Текущие роли и display names в настройках:
+
+- `wp_bvv` → `ADMIN`, display name `Вова`
+- `romateaches` → `TEACHER`, display name `Roma`
+- `privetnormalno` → `STUDENT`, display name `Саша`
+
+Наличие ролей пока не добавляет новых меню или flows: главное меню, тренировки, игра на 10 слов, ошибки и обмен словами остаются прежними. Все пользователи, прошедшие `is_user_allowed()`, используют существующий пользовательский flow. Все остальные получают отказ при `/start` или при попытке пройти `require_user()`.
 
 ### 4.2 Владение данными
 
