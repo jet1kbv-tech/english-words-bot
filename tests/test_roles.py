@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
-from app.handlers.teacher import _format_created_lesson, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_message, NOT_STARTED_TEXT
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
 
@@ -47,11 +47,25 @@ class TeacherLessonUiTests(unittest.TestCase):
     def test_teacher_menu_has_lessons_button(self) -> None:
         self.assertIn(TEACHER_LESSONS, self._texts(teacher_menu_keyboard()))
 
-    def test_teacher_lessons_menu_has_create_and_my_lessons(self) -> None:
-        self.assertEqual(self._texts(teacher_lessons_keyboard())[:2], [TEACHER_CREATE_LESSON, TEACHER_MY_LESSONS])
+    def test_teacher_lessons_menu_has_create_and_back(self) -> None:
+        self.assertEqual(self._texts(teacher_lessons_keyboard())[:2], [TEACHER_CREATE_LESSON, "⬅️ Назад"])
+
+
+    def test_lessons_screen_empty_state(self) -> None:
+        self.assertIn("Пока нет уроков.", _format_lessons_screen([]))
+
+    def test_lesson_detail_formatter_shows_counts(self) -> None:
+        summary = {"title": "Lesson 15 — Food", "status": "DRAFT", "words_count": 0, "homework_tasks_count": 0}
+
+        formatted = _format_lesson_detail(summary)
+
+        self.assertIn("Title: Lesson 15 — Food", formatted)
+        self.assertIn("Status: Draft", formatted)
+        self.assertIn("Words: 0", formatted)
+        self.assertIn("Homework tasks: 0", formatted)
 
     def test_lesson_formatters_show_requested_fields(self) -> None:
-        lesson = {"title": "Past Simple", "theme": None, "grammar_topic": "Past Simple", "status": "draft"}
+        lesson = {"title": "Past Simple", "theme": None, "grammar_topic": "Past Simple", "status": "DRAFT"}
         student = {"display_name": "Student", "username": "student"}
 
         created = _format_created_lesson(lesson, student)
@@ -61,7 +75,7 @@ class TeacherLessonUiTests(unittest.TestCase):
         self.assertIn("student: Student (@student)", created)
         self.assertIn("theme: -", created)
         self.assertIn("grammar_topic: Past Simple", created)
-        self.assertIn("status=draft", created)
+        self.assertIn("status=DRAFT", created)
 
     def test_my_lessons_formatter_shows_title_student_theme_status(self) -> None:
         lesson = {
@@ -69,7 +83,7 @@ class TeacherLessonUiTests(unittest.TestCase):
             "student_display_name": "Student",
             "student_username": "student",
             "theme": "Travel",
-            "status": "draft",
+            "status": "DRAFT",
         }
 
         formatted = _format_teacher_lessons([lesson])
@@ -77,7 +91,7 @@ class TeacherLessonUiTests(unittest.TestCase):
         self.assertIn("Past Simple", formatted)
         self.assertIn("Student (@student)", formatted)
         self.assertIn("theme: Travel", formatted)
-        self.assertIn("status: draft", formatted)
+        self.assertIn("status: DRAFT", formatted)
 
 
 if __name__ == "__main__":
@@ -136,6 +150,20 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
             message.replies.append((reply, reply_markup))
         message.reply_text = reply_text
         return self.SimpleNamespace(effective_user=self.SimpleNamespace(id=101, username="romateaches"), effective_message=message)
+
+
+    async def test_teacher_can_open_lessons_screen(self) -> None:
+        update = self._update(TEACHER_LESSONS)
+
+        self.assertTrue(await handle_teacher_message(update, self.context))
+        self.assertIn("📚 Lessons", update.effective_message.replies[-1][0])
+
+    async def test_student_cannot_access_teacher_lessons_handler(self) -> None:
+        update = self._update(TEACHER_LESSONS)
+        update.effective_user = self.SimpleNamespace(id=103, username="privetnormalno")
+
+        self.assertFalse(await handle_teacher_message(update, self.context))
+        self.assertEqual(update.effective_message.replies, [])
 
     async def test_teacher_can_add_student(self) -> None:
         first = self._update(ADD_STUDENT)
