@@ -104,11 +104,11 @@ class Database:
             CREATE TABLE IF NOT EXISTS lessons (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 teacher_user_id INTEGER,
-                student_user_id INTEGER NOT NULL,
+                student_user_id INTEGER,
                 title TEXT NOT NULL,
                 theme TEXT,
                 grammar_topic TEXT,
-                status TEXT NOT NULL DEFAULT 'draft',
+                status TEXT NOT NULL DEFAULT 'DRAFT',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -146,11 +146,45 @@ class Database:
         )
         self._connection.commit()
         self._ensure_daily_activity_xp_column()
+        self._ensure_lessons_schema()
 
     def _ensure_daily_activity_xp_column(self) -> None:
         columns = {row["name"] for row in self.fetchall("PRAGMA table_info(daily_activity)")}
         if "xp_earned" not in columns:
             self.execute("ALTER TABLE daily_activity ADD COLUMN xp_earned INTEGER NOT NULL DEFAULT 0")
+
+
+    def _ensure_lessons_schema(self) -> None:
+        columns = {row["name"]: row for row in self.fetchall("PRAGMA table_info(lessons)")}
+        if not columns:
+            return
+        needs_rebuild = columns.get("student_user_id") is not None and int(columns["student_user_id"]["notnull"]) == 1
+        if needs_rebuild:
+            self._connection.executescript(
+                """
+                PRAGMA foreign_keys = OFF;
+                ALTER TABLE lessons RENAME TO lessons_old;
+                CREATE TABLE lessons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_user_id INTEGER,
+                    student_user_id INTEGER,
+                    title TEXT NOT NULL,
+                    theme TEXT,
+                    grammar_topic TEXT,
+                    status TEXT NOT NULL DEFAULT 'DRAFT',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO lessons (id, teacher_user_id, student_user_id, title, theme, grammar_topic, status, created_at, updated_at)
+                SELECT id, teacher_user_id, student_user_id, title, theme, grammar_topic, upper(status), created_at, updated_at
+                FROM lessons_old;
+                DROP TABLE lessons_old;
+                PRAGMA foreign_keys = ON;
+                """
+            )
+            self._connection.commit()
+        else:
+            self.execute("UPDATE lessons SET status = upper(status) WHERE status != upper(status)")
 
     def execute(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         cursor = self._connection.execute(query, tuple(params))
@@ -280,6 +314,39 @@ class Database:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
 
 
+
+    def create_teacher_lesson(self, title: str, teacher_user_id: int | None = None) -> sqlite3.Row:
+        now = utc_now()
+        cursor = self.execute(
+            """
+            INSERT INTO lessons (teacher_user_id, student_user_id, title, status, created_at, updated_at)
+            VALUES (?, NULL, ?, 'DRAFT', ?, ?)
+            """,
+            (teacher_user_id, title.strip(), now, now),
+        )
+        lesson = self.get_lesson(int(cursor.lastrowid))
+        if lesson is None:
+            raise RuntimeError("Failed to create lesson")
+        return lesson
+
+    def list_lessons(self) -> list[sqlite3.Row]:
+        return self.fetchall("SELECT * FROM lessons ORDER BY created_at DESC, id DESC")
+
+    def get_lesson(self, lesson_id: int) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM lessons WHERE id = ?", (lesson_id,))
+
+    def get_lesson_summary(self, lesson_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            """
+            SELECT lessons.*,
+                   (SELECT COUNT(*) FROM lesson_words WHERE lesson_id = lessons.id) AS words_count,
+                   (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_tasks_count
+            FROM lessons
+            WHERE lessons.id = ?
+            """,
+            (lesson_id,),
+        )
+
     def create_lesson(
         self,
         student_user_id: int,
@@ -291,8 +358,8 @@ class Database:
         now = utc_now()
         cursor = self.execute(
             """
-            INSERT INTO lessons (teacher_user_id, student_user_id, title, theme, grammar_topic, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO lessons (teacher_user_id, student_user_id, title, theme, grammar_topic, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, ?)
             """,
             (teacher_user_id, student_user_id, title, theme, grammar_topic, now, now),
         )

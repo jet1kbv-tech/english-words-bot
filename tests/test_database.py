@@ -184,6 +184,34 @@ class LessonDatabaseTests(unittest.TestCase):
         self.db.close()
         self.temp_dir.cleanup()
 
+
+    def test_create_teacher_lesson_creates_draft_lesson(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+
+        self.assertEqual(lesson["title"], "Lesson 15 — Food")
+        self.assertEqual(lesson["teacher_user_id"], self.teacher["id"])
+        self.assertIsNone(lesson["student_user_id"])
+        self.assertEqual(lesson["status"], "DRAFT")
+
+    def test_list_lessons_returns_created_lessons(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 16 — Travel", self.teacher["id"])
+
+        lessons = self.db.list_lessons()
+
+        self.assertEqual([row["id"] for row in lessons], [lesson["id"]])
+
+    def test_get_lesson_summary_returns_counts(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 17 — Food", self.teacher["id"])
+        self.db.add_word(self.student["id"], "apple", "яблоко", None, None)
+        word = self.db.list_words(self.student["id"])[0]
+        self.db.add_word_to_lesson(lesson["id"], word["id"])
+        self.db.add_homework_task(lesson["id"], "text", "Write a sentence")
+
+        summary = self.db.get_lesson_summary(lesson["id"])
+
+        self.assertEqual(summary["words_count"], 1)
+        self.assertEqual(summary["homework_tasks_count"], 1)
+
     def test_create_lesson_creates_lesson(self) -> None:
         lesson = self.db.create_lesson(
             self.student["id"],
@@ -198,7 +226,7 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertEqual(lesson["title"], "Past Simple")
         self.assertEqual(lesson["theme"], "Travel")
         self.assertEqual(lesson["grammar_topic"], "Past Simple")
-        self.assertEqual(lesson["status"], "draft")
+        self.assertEqual(lesson["status"], "DRAFT")
 
     def test_list_lessons_for_student_returns_student_lessons(self) -> None:
         other_student = self.db.upsert_user(22, "other", "Other")
@@ -271,7 +299,7 @@ class TeacherLessonListTests(unittest.TestCase):
         self.assertEqual(lessons[0]["title"], "Lesson 11")
         self.assertEqual(lessons[0]["student_display_name"], "Student")
         self.assertEqual(lessons[0]["student_username"], "student")
-        self.assertEqual(lessons[0]["status"], "draft")
+        self.assertEqual(lessons[0]["status"], "DRAFT")
 
 class StudentAccessDatabaseTests(unittest.TestCase):
     def setUp(self) -> None:
