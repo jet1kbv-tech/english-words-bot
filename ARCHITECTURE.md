@@ -596,3 +596,7 @@ Lesson assignments are stored separately in `lesson_students`.
 Lessons do not store `student_id`/`student_username` directly for the new assignment framework. The assignment layer keeps the current active target outside the lesson row, so teacher-side reassignment does not mutate lesson metadata.
 
 Only one active assignment per lesson is supported now, enforced by a partial unique index on `lesson_students(lesson_id)` where `is_active = 1`, but historical inactive assignments are preserved for audit and future reporting. Assigning a different student deactivates the previous active row with `unassigned_at` and inserts a new active `ASSIGNED` row. Unassigning only deactivates the current row; it does not delete history.
+
+Student interacts with the platform primarily through assigned Lessons.
+
+Legacy dictionary functionality remains available internally but is no longer the primary navigation flow for students.
