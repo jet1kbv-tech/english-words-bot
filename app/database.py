@@ -187,7 +187,9 @@ class Database:
 
     @staticmethod
     def normalize_username(username: str | None) -> str:
-        return (username or "").strip().lstrip("@").casefold()
+        from app.student_access_service import normalize_username
+
+        return normalize_username(username)
 
     def add_student_access(
         self, username: str, display_name: str | None = None, added_by_user_id: int | None = None

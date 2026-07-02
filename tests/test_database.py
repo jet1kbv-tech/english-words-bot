@@ -298,3 +298,34 @@ class StudentAccessDatabaseTests(unittest.TestCase):
         self.db.execute("UPDATE student_access SET is_active = 0 WHERE username = ?", ("newstudent",))
 
         self.assertFalse(self.db.is_active_student_access("newstudent"))
+
+class StudentAccessAdditionalDatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_student_access_normalizes_username(self) -> None:
+        row = self.db.add_student_access("@PrivetNormalno")
+
+        self.assertEqual(row["username"], "privetnormalno")
+
+    def test_duplicate_active_student_access_is_single_active_row(self) -> None:
+        self.db.add_student_access("studentone")
+        self.db.add_student_access("@StudentOne")
+
+        rows = self.db.fetchall("SELECT * FROM student_access WHERE username = ?", ("studentone",))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["is_active"], 1)
+
+    def test_inactive_student_access_reactivation(self) -> None:
+        self.db.add_student_access("studentone")
+        self.db.execute("UPDATE student_access SET is_active = 0 WHERE username = ?", ("studentone",))
+
+        row = self.db.add_student_access("studentone")
+
+        self.assertEqual(row["is_active"], 1)

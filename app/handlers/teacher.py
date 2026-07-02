@@ -8,6 +8,7 @@ from app.config import Settings
 from app.database import Database
 from app.handlers.training import _today_moscow
 from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
+from app.student_access_service import StudentAccessService
 
 _SELECT_PROGRESS = "teacher_select_progress"
 _SELECT_IMPERSONATE = "teacher_select_impersonate"
@@ -160,7 +161,7 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         return True
     if text == ADD_STUDENT:
         context.user_data["teacher_action"] = _ADD_STUDENT
-        await update.effective_message.reply_text("Отправьте Telegram username ученика без @ или с @:")
+        await update.effective_message.reply_text("Введите username ученика, например @privetnormalno")
         return True
     if text == TEACHER_LESSONS:
         context.user_data.pop("teacher_action", None)
@@ -191,16 +192,23 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
 
     action = context.user_data.get("teacher_action")
     if action == _ADD_STUDENT:
-        username = db.normalize_username(text)
-        if not username:
-            await update.effective_message.reply_text("Username не может быть пустым. Отправьте Telegram username ученика:")
+        service = StudentAccessService(db)
+        username = service.normalize_username(text)
+        if not service.validate_username(username):
+            await update.effective_message.reply_text("Не похоже на Telegram username.\n\nВведите username в формате @username.")
             return True
-        db.add_student_access(username, added_by_user_id=_teacher_user_id(update, db))
+        result = service.add_student_access(username, added_by_user_id=_teacher_user_id(update, db))
         context.user_data.pop("teacher_action", None)
-        await update.effective_message.reply_text(
-            f"Ученик @{username} добавлен. Теперь он сможет открыть бота через /start.",
-            reply_markup=teacher_menu_keyboard(),
-        )
+        if result.status == "already_active":
+            reply = f"Ученик @{result.username} уже добавлен."
+        elif result.status == "reactivated":
+            reply = f"Доступ для @{result.username} снова включён ✅"
+        else:
+            reply = (
+                f"Ученик @{result.username} добавлен ✅\n\n"
+                "Если он ещё не запускал бота, попросите его открыть бота и нажать /start."
+            )
+        await update.effective_message.reply_text(reply, reply_markup=teacher_menu_keyboard())
         return True
     if action == _CREATE_LESSON_STUDENT:
         student = _student_by_label(_student_users(context), text)

@@ -144,7 +144,37 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await handle_teacher_message(second, self.context))
 
         self.assertTrue(self.db.is_active_student_access("newstudent"))
-        self.assertEqual(second.effective_message.replies[-1][0], "Ученик @newstudent добавлен. Теперь он сможет открыть бота через /start.")
+        self.assertEqual(second.effective_message.replies[-1][0], "Ученик @newstudent добавлен ✅\n\nЕсли он ещё не запускал бота, попросите его открыть бота и нажать /start.")
+
+
+    async def test_teacher_duplicate_active_student_message(self) -> None:
+        self.db.add_student_access("newstudent")
+        self.context.user_data["teacher_action"] = "teacher_add_student"
+
+        update = self._update("@NewStudent")
+        self.assertTrue(await handle_teacher_message(update, self.context))
+
+        self.assertEqual(update.effective_message.replies[-1][0], "Ученик @newstudent уже добавлен.")
+
+    async def test_teacher_reactivates_inactive_student_message(self) -> None:
+        self.db.add_student_access("newstudent")
+        self.db.execute("UPDATE student_access SET is_active = 0 WHERE username = ?", ("newstudent",))
+        self.context.user_data["teacher_action"] = "teacher_add_student"
+
+        update = self._update("@NewStudent")
+        self.assertTrue(await handle_teacher_message(update, self.context))
+
+        self.assertTrue(self.db.is_active_student_access("newstudent"))
+        self.assertEqual(update.effective_message.replies[-1][0], "Доступ для @newstudent снова включён ✅")
+
+    async def test_teacher_rejects_invalid_student_username(self) -> None:
+        self.context.user_data["teacher_action"] = "teacher_add_student"
+
+        update = self._update("https://t.me/newstudent")
+        self.assertTrue(await handle_teacher_message(update, self.context))
+
+        self.assertFalse(self.db.is_active_student_access("https://t.me/newstudent"))
+        self.assertEqual(update.effective_message.replies[-1][0], "Не похоже на Telegram username.\n\nВведите username в формате @username.")
 
     async def test_admin_remains_admin_but_visible_as_student_target(self) -> None:
         self.assertEqual(RoleResolver(RoleSettings(), self.db).role_for("wp_bvv"), Role.ADMIN)
@@ -159,3 +189,17 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(student["has_user"])
         self.assertEqual(_format_student_progress(self.db, student), NOT_STARTED_TEXT)
+
+class StudentAccessValidationTests(unittest.TestCase):
+    def test_normalize_username_removes_at_and_casefolds(self) -> None:
+        from app.student_access_service import normalize_username
+
+        self.assertEqual(normalize_username("@PrivetNormalno"), "privetnormalno")
+
+    def test_validate_username_rejects_invalid_values(self) -> None:
+        from app.student_access_service import normalize_username, validate_username
+
+        invalid_values = ["", "ab", "with space", "https://t.me/user", "bad-name", "@"]
+        for value in invalid_values:
+            with self.subTest(value=value):
+                self.assertFalse(validate_username(normalize_username(value)))
