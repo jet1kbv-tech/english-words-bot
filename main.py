@@ -10,6 +10,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Conv
 from app.config import load_settings
 from app.database import Database
 from app.handlers.menu import menu_message
+from app.handlers.teacher import TEACHER_LESSON_CALLBACK_PREFIXES, TEACHER_LESSONS_LIST_CALLBACK, handle_teacher_lesson_callback
 from app.handlers.start import start
 from app.handlers.training import daily_reminder
 from app.handlers.words import BULK_WORDS, ENGLISH, EXAMPLE, TOPIC, TRANSLATION, add_word_start, bulk_add_words_start, bulk_words_step, cancel_add_word, confirm_delete_word, delete_word_prompt, dictionary_delete_page, dictionary_menu, dictionary_page, english_step, example_step, topic_step, translation_step
@@ -63,6 +64,8 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(delete_word_prompt, pattern=r"^dict_delete_word:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(confirm_delete_word, pattern=r"^confirm_delete_word:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(dictionary_menu, pattern=r"^dict_menu$"))
+    lesson_pattern = "^(" + "|".join(TEACHER_LESSON_CALLBACK_PREFIXES) + r")\d+$|^" + TEACHER_LESSONS_LIST_CALLBACK + "$"
+    application.add_handler(CallbackQueryHandler(handle_teacher_lesson_callback, pattern=lesson_pattern))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_message))
     application.add_error_handler(error_handler)
     return application

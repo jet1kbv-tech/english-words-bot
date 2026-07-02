@@ -340,7 +340,10 @@ class Database:
             """
             SELECT lessons.*,
                    (SELECT COUNT(*) FROM lesson_words WHERE lesson_id = lessons.id) AS words_count,
-                   (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_tasks_count
+                   (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_tasks_count,
+                   (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_count,
+                   0 AS grammar_count,
+                   0 AS exercises_count
             FROM lessons
             WHERE lessons.id = ?
             """,
