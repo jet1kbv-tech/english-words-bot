@@ -7,7 +7,7 @@ import unittest
 from app.database import Database
 from app.handlers.admin import _format_all_users
 from app.handlers.start import require_user
-from app.keyboards import ADMIN_MENU, ADMIN_STUDENT_VIEW, ADMIN_TEACHER_VIEW, ADMIN_USERS, ADMIN_MY_MENU, main_menu_keyboard, admin_menu_keyboard
+from app.keyboards import ADD_STUDENT, ADMIN_MENU, ADMIN_STUDENT_VIEW, ADMIN_TEACHER_VIEW, ADMIN_USERS, ADMIN_MY_MENU, main_menu_keyboard, admin_menu_keyboard
 
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ class AdminKeyboardTests(unittest.TestCase):
     def test_admin_menu_contains_minimal_admin_actions(self) -> None:
         texts = self._texts(admin_menu_keyboard())
 
-        self.assertEqual(texts, [ADMIN_STUDENT_VIEW, ADMIN_TEACHER_VIEW, ADMIN_USERS, ADMIN_MY_MENU])
+        self.assertEqual(texts, [ADMIN_STUDENT_VIEW, ADMIN_TEACHER_VIEW, ADMIN_USERS, ADD_STUDENT, ADMIN_MY_MENU])
 
 
 class AdminUsersReportTests(unittest.TestCase):

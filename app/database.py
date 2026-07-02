@@ -34,6 +34,16 @@ class Database:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS student_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                added_by_user_id INTEGER,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS words (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 owner_user_id INTEGER NOT NULL,
@@ -175,8 +185,46 @@ class Database:
     def list_users(self) -> list[sqlite3.Row]:
         return self.fetchall("SELECT * FROM users ORDER BY id")
 
+    @staticmethod
+    def normalize_username(username: str | None) -> str:
+        return (username or "").strip().lstrip("@").casefold()
+
+    def add_student_access(
+        self, username: str, display_name: str | None = None, added_by_user_id: int | None = None
+    ) -> sqlite3.Row:
+        normalized = self.normalize_username(username)
+        if not normalized:
+            raise ValueError("username must not be empty")
+        now = utc_now()
+        self.execute(
+            """
+            INSERT INTO student_access (username, display_name, added_by_user_id, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, 1, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                display_name = COALESCE(excluded.display_name, student_access.display_name),
+                added_by_user_id = excluded.added_by_user_id,
+                is_active = 1,
+                updated_at = excluded.updated_at
+            """,
+            (normalized, display_name, added_by_user_id, now, now),
+        )
+        row = self.get_student_access(normalized)
+        if row is None:
+            raise RuntimeError("Failed to create or load student access")
+        return row
+
+    def get_student_access(self, username: str) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM student_access WHERE username = ?", (self.normalize_username(username),))
+
+    def is_active_student_access(self, username: str | None) -> bool:
+        normalized = self.normalize_username(username)
+        if not normalized:
+            return False
+        row = self.fetchone("SELECT 1 FROM student_access WHERE username = ? AND is_active = 1", (normalized,))
+        return row is not None
+
     def list_student_users(self, usernames: Iterable[str]) -> list[sqlite3.Row]:
-        normalized = sorted({username.casefold().lstrip("@") for username in usernames if username})
+        normalized = sorted({self.normalize_username(username) for username in usernames if username})
         if not normalized:
             return []
         placeholders = ",".join("?" for _ in normalized)
@@ -184,6 +232,44 @@ class Database:
             f"SELECT * FROM users WHERE lower(username) IN ({placeholders}) ORDER BY display_name, username",
             normalized,
         )
+
+    def list_student_targets(self, usernames: Iterable[str], display_names: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        display_names = display_names or {}
+        target_usernames = {self.normalize_username(username) for username in usernames if username}
+        target_usernames.update(
+            row["username"] for row in self.fetchall("SELECT username FROM student_access WHERE is_active = 1")
+        )
+        if not target_usernames:
+            return []
+        placeholders = ",".join("?" for _ in target_usernames)
+        users = {
+            self.normalize_username(row["username"]): row
+            for row in self.fetchall(f"SELECT * FROM users WHERE lower(username) IN ({placeholders})", sorted(target_usernames))
+        }
+        access_rows = {
+            row["username"]: row
+            for row in self.fetchall(
+                f"SELECT * FROM student_access WHERE username IN ({placeholders}) AND is_active = 1",
+                sorted(target_usernames),
+            )
+        }
+        targets: list[dict[str, Any]] = []
+        for username in sorted(target_usernames):
+            user = users.get(username)
+            access = access_rows.get(username)
+            display_name = (
+                user["display_name"]
+                if user is not None
+                else (access["display_name"] if access is not None and access["display_name"] else display_names.get(username, username))
+            )
+            targets.append({
+                "id": user["id"] if user is not None else None,
+                "telegram_id": user["telegram_id"] if user is not None else None,
+                "username": user["username"] if user is not None else username,
+                "display_name": display_name,
+                "has_user": user is not None,
+            })
+        return sorted(targets, key=lambda item: (str(item["display_name"]).casefold(), str(item["username"]).casefold()))
 
     def get_user_by_id(self, user_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE id = ?", (user_id,))

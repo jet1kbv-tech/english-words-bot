@@ -183,7 +183,8 @@ journalctl -u english-words-bot -f
 
 Admin menu:
 
-- 👨‍🎓 Войти как ученик — выбор student user и impersonation через `context.user_data["impersonated_user_id"]`; действия выполняются как выбранный ученик, telegram_id admin не меняется, дубли users не создаются. Для выхода есть кнопка ↩️ Выйти из режима ученика.
+- 👨‍🎓 Войти как ученик — выбор student target и impersonation через `context.user_data["impersonated_user_id"]`; действия выполняются как выбранный ученик, telegram_id admin не меняется, дубли users не создаются. Если ученик добавлен, но ещё не запускал `/start`, прогресс/impersonation недоступны до появления `users`-записи. Для выхода есть кнопка ↩️ Выйти из режима ученика.
+- ➕ Добавить ученика — admin отправляет Telegram username с `@` или без, бот нормализует его (`trim`, убрать `@`, lower/casefold) и создаёт/активирует запись в `student_access`.
 - 👩‍🏫 Войти как учитель — включает teacher-view для admin и показывает teacher menu без добавления admin в `TEACHER_USERNAMES`.
 - 📊 Все пользователи — показывает username, display_name, роль, total words и streak.
 - ↩️ Моё меню — возвращает обычное admin student menu.
@@ -192,9 +193,10 @@ Admin menu:
 
 Пользователь с ролью `TEACHER` определяется через `RoleResolver` по `teacher_usernames` и при `/start` видит отдельное teacher menu вместо student menu:
 
-- 👤 Ученики — список student users из `allowed_usernames`; admin/teacher usernames исключаются.
-- 📊 Прогресс ученика — выбор ученика и сводка: всего слов, карточек сегодня, XP сегодня, streak и top-10 слабых слов.
+- 👤 Ученики — список student users из `allowed_usernames` и активных `student_access`; добавленные ученики без `users`-записи помечаются как «ещё не запускал бота». Admin `@wp_bvv` остаётся с ролью `ADMIN`, но также показывается teacher как student target `Вова / @wp_bvv` для прогресса и режима ученика.
+- 📊 Прогресс ученика — выбор ученика и сводка: всего слов, карточек сегодня, XP сегодня, streak и top-10 слабых слов. Если выбранный `student_access` ещё не запускал `/start`, бот просит попросить ученика открыть бота и нажать `/start`.
 - 👀 Режим ученика — выбор ученика и временное impersonation в `context.user_data`; telegram_id teacher не меняется, новые пользователи не создаются. Для выхода есть кнопка ↩️ Выйти из режима ученика.
+- ➕ Добавить ученика — teacher отправляет Telegram username с `@` или без, бот нормализует его (`trim`, убрать `@`, lower/casefold) и создаёт/активирует запись в `student_access`.
 - 📚 Уроки — отдельный teacher раздел с кнопками `➕ Создать урок` и `📋 Мои уроки`. Создание урока просит выбрать ученика, ввести `title`, опционально `theme` и `grammar_topic`, затем создаёт lesson со статусом `draft` и показывает созданные поля. `📋 Мои уроки` показывает последние 10 уроков учителя: title, student, theme и status.
 
 Teacher role не добавляет admin-функций, AI-генерацию, домашние задания ученику и не меняет game flow.

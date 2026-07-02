@@ -2,8 +2,8 @@ from dataclasses import dataclass
 import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
-from app.handlers.teacher import _format_created_lesson, _format_teacher_lessons
-from app.keyboards import TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
+from app.handlers.teacher import _format_created_lesson, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_message, NOT_STARTED_TEXT
+from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
 
 @dataclass(frozen=True)
@@ -82,3 +82,80 @@ class TeacherLessonUiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class StudentAccessRoleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from app.database import Database
+
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.settings = RoleSettings()
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_student_access_allows_user_as_student(self) -> None:
+        self.db.add_student_access("newstudent")
+        resolver = RoleResolver(self.settings, self.db)
+
+        self.assertTrue(resolver.is_allowed("newstudent"))
+        self.assertEqual(resolver.role_for("newstudent"), Role.STUDENT)
+
+    def test_inactive_student_access_does_not_allow_user(self) -> None:
+        self.db.add_student_access("newstudent")
+        self.db.execute("UPDATE student_access SET is_active = 0 WHERE username = ?", ("newstudent",))
+
+        self.assertFalse(RoleResolver(self.settings, self.db).is_allowed("newstudent"))
+
+class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from app.database import Database
+
+        self.SimpleNamespace = SimpleNamespace
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.teacher = self.db.upsert_user(101, "romateaches", "Roma")
+        self.admin = self.db.upsert_user(102, "wp_bvv", "Вова")
+        self.context = SimpleNamespace(application=SimpleNamespace(bot_data={"db": self.db, "settings": RoleSettings()}), user_data={})
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def _update(self, text: str):
+        message = self.SimpleNamespace(text=text, replies=[])
+        async def reply_text(reply, reply_markup=None):
+            message.replies.append((reply, reply_markup))
+        message.reply_text = reply_text
+        return self.SimpleNamespace(effective_user=self.SimpleNamespace(id=101, username="romateaches"), effective_message=message)
+
+    async def test_teacher_can_add_student(self) -> None:
+        first = self._update(ADD_STUDENT)
+        self.assertTrue(await handle_teacher_message(first, self.context))
+        second = self._update(" @NewStudent ")
+        self.assertTrue(await handle_teacher_message(second, self.context))
+
+        self.assertTrue(self.db.is_active_student_access("newstudent"))
+        self.assertEqual(second.effective_message.replies[-1][0], "Ученик @newstudent добавлен. Теперь он сможет открыть бота через /start.")
+
+    async def test_admin_remains_admin_but_visible_as_student_target(self) -> None:
+        self.assertEqual(RoleResolver(RoleSettings(), self.db).role_for("wp_bvv"), Role.ADMIN)
+
+        students = _student_users(self.context)
+
+        self.assertTrue(any(student["username"] == "wp_bvv" and student["display_name"] == "Вова" for student in students))
+
+    async def test_access_student_without_user_has_not_started_progress_message(self) -> None:
+        self.db.add_student_access("newstudent")
+        student = next(student for student in _student_users(self.context) if student["username"] == "newstudent")
+
+        self.assertFalse(student["has_user"])
+        self.assertEqual(_format_student_progress(self.db, student), NOT_STARTED_TEXT)

@@ -7,7 +7,7 @@ from app.auth.roles import Role, RoleResolver
 from app.config import Settings
 from app.database import Database
 from app.handlers.training import _today_moscow
-from app.keyboards import EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
+from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
 
 _SELECT_PROGRESS = "teacher_select_progress"
 _SELECT_IMPERSONATE = "teacher_select_impersonate"
@@ -16,11 +16,13 @@ _CREATE_LESSON_TITLE = "teacher_create_lesson_title"
 _CREATE_LESSON_THEME = "teacher_create_lesson_theme"
 _CREATE_LESSON_GRAMMAR = "teacher_create_lesson_grammar"
 _OPTIONAL_SKIP = {"", "-", "пропустить", "skip"}
+_ADD_STUDENT = "teacher_add_student"
+NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
 
 def _resolver(context: ContextTypes.DEFAULT_TYPE) -> RoleResolver:
     settings: Settings = context.application.bot_data["settings"]
-    return RoleResolver(settings)
+    return RoleResolver(settings, context.application.bot_data.get("db"))
 
 
 def is_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -33,11 +35,17 @@ def is_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 def _student_users(context: ContextTypes.DEFAULT_TYPE) -> list:
     db: Database = context.application.bot_data["db"]
-    return db.list_student_users(_resolver(context).student_usernames)
+    settings: Settings = context.application.bot_data["settings"]
+    resolver = _resolver(context)
+    student_usernames = set(resolver.student_usernames) | {"wp_bvv"}
+    return db.list_student_targets(student_usernames, getattr(settings, "display_names", {}))
 
 
 def _student_keyboard(students: list, back_label: str = "↩️ Teacher menu") -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(f"{student['display_name']} (@{student['username']})")] for student in students]
+    rows = []
+    for student in students:
+        suffix = " — ещё не запускал бота" if not student.get("has_user", True) else ""
+        rows.append([KeyboardButton(f"{student['display_name']} (@{student['username']}){suffix}")])
     rows.append([KeyboardButton(back_label)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -47,6 +55,7 @@ def _student_by_label(students: list, text: str):
     for student in students:
         labels = {
             f"{student['display_name']} (@{student['username']})".casefold(),
+            f"{student['display_name']} (@{student['username']}) — ещё не запускал бота".casefold(),
             f"@{student['username']}".casefold(),
             str(student["display_name"]).casefold(),
             str(student["username"]).casefold(),
@@ -95,11 +104,15 @@ def _format_students(students: list) -> str:
     if not students:
         return "Пока нет учеников: student users из allowed users ещё не заходили в бот."
     lines = ["👤 Ученики:"]
-    lines.extend(f"• {student['display_name']} (@{student['username']})" for student in students)
+    for student in students:
+        suffix = " — ещё не запускал бота" if not student.get("has_user", True) else ""
+        lines.append(f"• {student['display_name']} (@{student['username']}){suffix}")
     return "\n".join(lines)
 
 
 def _format_student_progress(db: Database, student) -> str:
+    if not student.get("has_user", True) or student.get("id") is None:
+        return NOT_STARTED_TEXT
     activity = db.get_daily_activity(student["id"], _today_moscow())
     weak_words = db.list_weak_words(student["id"], limit=10)
     weak_lines = [f"{i}. {word['english']} — {word['translation']} (score: {word['progress_score'] or 0}, forgot: {word['times_forgotten'] or 0})" for i, word in enumerate(weak_words, start=1)]
@@ -145,6 +158,10 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
     if text == TEACHER_STUDENTS:
         await update.effective_message.reply_text(_format_students(_student_users(context)), reply_markup=teacher_menu_keyboard())
         return True
+    if text == ADD_STUDENT:
+        context.user_data["teacher_action"] = _ADD_STUDENT
+        await update.effective_message.reply_text("Отправьте Telegram username ученика без @ или с @:")
+        return True
     if text == TEACHER_LESSONS:
         context.user_data.pop("teacher_action", None)
         await update.effective_message.reply_text("📚 Уроки:", reply_markup=teacher_lessons_keyboard())
@@ -173,10 +190,25 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         return True
 
     action = context.user_data.get("teacher_action")
+    if action == _ADD_STUDENT:
+        username = db.normalize_username(text)
+        if not username:
+            await update.effective_message.reply_text("Username не может быть пустым. Отправьте Telegram username ученика:")
+            return True
+        db.add_student_access(username, added_by_user_id=_teacher_user_id(update, db))
+        context.user_data.pop("teacher_action", None)
+        await update.effective_message.reply_text(
+            f"Ученик @{username} добавлен. Теперь он сможет открыть бота через /start.",
+            reply_markup=teacher_menu_keyboard(),
+        )
+        return True
     if action == _CREATE_LESSON_STUDENT:
         student = _student_by_label(_student_users(context), text)
         if student is None:
             await update.effective_message.reply_text("Не нашёл такого ученика. Выберите ученика из списка.")
+            return True
+        if not student.get("has_user", True) or student.get("id") is None:
+            await update.effective_message.reply_text(NOT_STARTED_TEXT)
             return True
         context.user_data["lesson_draft"] = {"student_user_id": student["id"]}
         context.user_data["teacher_action"] = _CREATE_LESSON_TITLE
@@ -218,6 +250,9 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data.pop("teacher_action", None)
         if action == _SELECT_PROGRESS:
             await update.effective_message.reply_text(_format_student_progress(db, student), reply_markup=teacher_menu_keyboard())
+            return True
+        if not student.get("has_user", True) or student.get("id") is None:
+            await update.effective_message.reply_text(NOT_STARTED_TEXT, reply_markup=teacher_menu_keyboard())
             return True
         context.user_data["impersonated_user_id"] = student["id"]
         context.user_data.pop("training", None)

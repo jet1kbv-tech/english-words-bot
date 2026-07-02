@@ -272,3 +272,29 @@ class TeacherLessonListTests(unittest.TestCase):
         self.assertEqual(lessons[0]["student_display_name"], "Student")
         self.assertEqual(lessons[0]["student_username"], "student")
         self.assertEqual(lessons[0]["status"], "draft")
+
+class StudentAccessDatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_add_student_access_normalizes_and_reactivates(self) -> None:
+        row = self.db.add_student_access(" @NewStudent ")
+        self.assertEqual(row["username"], "newstudent")
+        self.db.execute("UPDATE student_access SET is_active = 0 WHERE username = ?", ("newstudent",))
+
+        updated = self.db.add_student_access("NEWSTUDENT")
+
+        self.assertEqual(updated["username"], "newstudent")
+        self.assertEqual(updated["is_active"], 1)
+
+    def test_inactive_student_access_is_not_active(self) -> None:
+        self.db.add_student_access("newstudent")
+        self.db.execute("UPDATE student_access SET is_active = 0 WHERE username = ?", ("newstudent",))
+
+        self.assertFalse(self.db.is_active_student_access("newstudent"))

@@ -7,15 +7,16 @@ from app.auth.roles import Role, RoleResolver
 from app.config import Settings
 from app.database import Database
 from app.handlers.training import _today_moscow
-from app.keyboards import ADMIN_MENU, ADMIN_STUDENT_VIEW, ADMIN_TEACHER_VIEW, ADMIN_USERS, ADMIN_MY_MENU, EXIT_STUDENT_MODE, admin_menu_keyboard, main_menu_keyboard, teacher_menu_keyboard
+from app.keyboards import ADD_STUDENT, ADMIN_MENU, ADMIN_STUDENT_VIEW, ADMIN_TEACHER_VIEW, ADMIN_USERS, ADMIN_MY_MENU, EXIT_STUDENT_MODE, admin_menu_keyboard, main_menu_keyboard, teacher_menu_keyboard
 from app.handlers.teacher import _student_by_label, _student_keyboard, _student_users
 
 _SELECT_ADMIN_STUDENT = "admin_select_student"
+_ADD_ADMIN_STUDENT = "admin_add_student"
 
 
 def _resolver(context: ContextTypes.DEFAULT_TYPE) -> RoleResolver:
     settings: Settings = context.application.bot_data["settings"]
-    return RoleResolver(settings)
+    return RoleResolver(settings, context.application.bot_data.get("db"))
 
 
 def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -75,6 +76,10 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == ADMIN_USERS:
         await update.effective_message.reply_text(_format_all_users(context), reply_markup=admin_menu_keyboard())
         return True
+    if text == ADD_STUDENT:
+        context.user_data["admin_action"] = _ADD_ADMIN_STUDENT
+        await update.effective_message.reply_text("Отправьте Telegram username ученика без @ или с @:")
+        return True
     if text == ADMIN_TEACHER_VIEW:
         context.user_data.pop("admin_action", None)
         context.user_data["admin_teacher_view"] = True
@@ -89,6 +94,21 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.effective_message.reply_text("Выберите ученика:", reply_markup=_student_keyboard(students, back_label=ADMIN_MENU))
         return True
 
+    if context.user_data.get("admin_action") == _ADD_ADMIN_STUDENT:
+        db: Database = context.application.bot_data["db"]
+        username = db.normalize_username(text)
+        if not username:
+            await update.effective_message.reply_text("Username не может быть пустым. Отправьте Telegram username ученика:")
+            return True
+        admin_user = db.get_user_by_telegram_id(update.effective_user.id) if update.effective_user else None
+        db.add_student_access(username, added_by_user_id=int(admin_user["id"]) if admin_user is not None else None)
+        context.user_data.pop("admin_action", None)
+        await update.effective_message.reply_text(
+            f"Ученик @{username} добавлен. Теперь он сможет открыть бота через /start.",
+            reply_markup=admin_menu_keyboard(),
+        )
+        return True
+
     if context.user_data.get("admin_action") == _SELECT_ADMIN_STUDENT:
         student = _student_by_label(_student_users(context), text)
         if student is None:
@@ -96,6 +116,12 @@ async def handle_admin_message(update: Update, context: ContextTypes.DEFAULT_TYP
             return True
         context.user_data.pop("admin_action", None)
         context.user_data.pop("admin_teacher_view", None)
+        if not student.get("has_user", True) or student.get("id") is None:
+            await update.effective_message.reply_text(
+                "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start.",
+                reply_markup=admin_menu_keyboard(),
+            )
+            return True
         context.user_data["impersonated_user_id"] = student["id"]
         context.user_data.pop("training", None)
         await update.effective_message.reply_text(
