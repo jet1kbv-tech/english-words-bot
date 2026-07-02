@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from app.auth.roles import Role, RoleResolver
@@ -25,6 +25,21 @@ NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попр
 LESSON_BACK_TO_LIST = "⬅️ К списку lessons"
 TEACHER_LESSONS_BACK = "⬅️ Назад"
 TEACHER_LESSON_OPEN_PREFIX = "Lesson "
+TEACHER_LESSON_WORDS_PREFIX = "teacher:lesson:words:"
+TEACHER_LESSON_GRAMMAR_PREFIX = "teacher:lesson:grammar:"
+TEACHER_LESSON_EXERCISES_PREFIX = "teacher:lesson:exercises:"
+TEACHER_LESSON_HOMEWORK_PREFIX = "teacher:lesson:homework:"
+TEACHER_LESSON_AI_PREFIX = "teacher:lesson:ai:"
+TEACHER_LESSON_BACK_PREFIX = "teacher:lesson:back:"
+TEACHER_LESSONS_LIST_CALLBACK = "teacher:lessons:list"
+TEACHER_LESSON_CALLBACK_PREFIXES = (
+    TEACHER_LESSON_WORDS_PREFIX,
+    TEACHER_LESSON_GRAMMAR_PREFIX,
+    TEACHER_LESSON_EXERCISES_PREFIX,
+    TEACHER_LESSON_HOMEWORK_PREFIX,
+    TEACHER_LESSON_AI_PREFIX,
+    TEACHER_LESSON_BACK_PREFIX,
+)
 
 
 def _lesson_service(db: Database) -> LessonService:
@@ -51,6 +66,10 @@ def _lessons_list_keyboard(lessons: list) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
+def _count(summary, key: str) -> int:
+    return int(summary[key] or 0) if key in summary.keys() else 0
+
+
 def _format_lesson_detail(summary) -> str:
     return "\n".join([
         "📚 Lesson",
@@ -58,13 +77,39 @@ def _format_lesson_detail(summary) -> str:
         f"Title: {summary['title']}",
         f"Status: {_status_label(summary['status'])}",
         "",
-        f"Words: {summary['words_count'] or 0}",
-        f"Homework tasks: {summary['homework_tasks_count'] or 0}",
+        f"📖 Words: {_count(summary, 'words_count')}",
+        f"📝 Grammar: {_count(summary, 'grammar_count')}",
+        f"✏️ Exercises: {_count(summary, 'exercises_count')}",
+        f"🏠 Homework: {_count(summary, 'homework_count')}",
     ])
 
 
-def _lesson_detail_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([[KeyboardButton(LESSON_BACK_TO_LIST)]], resize_keyboard=True)
+def _lesson_detail_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📖 Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("📝 Grammar", callback_data=f"{TEACHER_LESSON_GRAMMAR_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("✏️ Exercises", callback_data=f"{TEACHER_LESSON_EXERCISES_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("🏠 Homework", callback_data=f"{TEACHER_LESSON_HOMEWORK_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("🤖 AI Assistant", callback_data=f"{TEACHER_LESSON_AI_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton(LESSON_BACK_TO_LIST, callback_data=TEACHER_LESSONS_LIST_CALLBACK)],
+    ])
+
+
+
+def _format_lesson_section(summary, section: str) -> str:
+    descriptions = {
+        "words": ("📖 Words", "Этот раздел скоро позволит добавлять и редактировать слова урока."),
+        "grammar": ("📝 Grammar", "Этот раздел скоро позволит добавлять грамматическую тему и объяснения."),
+        "exercises": ("✏️ Exercises", "Этот раздел скоро позволит добавлять упражнения урока."),
+        "homework": ("🏠 Homework", "Этот раздел скоро позволит собрать домашнее задание по уроку."),
+        "ai": ("🤖 AI Assistant", "Скоро здесь можно будет сгенерировать слова, упражнения, домашку и подсказки с помощью AI."),
+    }
+    title, description = descriptions[section]
+    return "\n".join([title, "", description, "", f"Lesson: {summary['title']}"])
+
+
+def _lesson_section_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К lesson", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")]])
 
 
 async def _show_lessons_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -83,8 +128,55 @@ async def _show_lesson_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     if summary is None:
         await update.effective_message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(_lesson_service(db).list_lessons()))
         return
-    await update.effective_message.reply_text(_format_lesson_detail(summary), reply_markup=_lesson_detail_keyboard())
+    context.user_data["current_teacher_lesson_id"] = lesson_id
+    await update.effective_message.reply_text(_format_lesson_detail(summary), reply_markup=_lesson_detail_keyboard(lesson_id))
 
+
+
+def _lesson_id_from_callback(data: str, prefix: str) -> int | None:
+    lesson_id_text = data.removeprefix(prefix).strip()
+    return int(lesson_id_text) if lesson_id_text.isdigit() else None
+
+
+async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    if not is_teacher(update, context):
+        return
+    data = query.data or ""
+    db: Database = context.application.bot_data["db"]
+    service = _lesson_service(db)
+    if data == TEACHER_LESSONS_LIST_CALLBACK:
+        lessons = service.list_lessons()
+        if query.message is not None:
+            await query.message.reply_text(_format_lessons_screen(lessons), reply_markup=_lessons_list_keyboard(lessons))
+        return
+    for prefix in TEACHER_LESSON_CALLBACK_PREFIXES:
+        if not data.startswith(prefix):
+            continue
+        lesson_id = _lesson_id_from_callback(data, prefix)
+        if lesson_id is None:
+            return
+        summary = service.get_lesson_summary(lesson_id)
+        if summary is None:
+            if query.message is not None:
+                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+            return
+        context.user_data["current_teacher_lesson_id"] = lesson_id
+        if prefix == TEACHER_LESSON_BACK_PREFIX:
+            await query.edit_message_text(_format_lesson_detail(summary), reply_markup=_lesson_detail_keyboard(lesson_id))
+            return
+        section_by_prefix = {
+            TEACHER_LESSON_WORDS_PREFIX: "words",
+            TEACHER_LESSON_GRAMMAR_PREFIX: "grammar",
+            TEACHER_LESSON_EXERCISES_PREFIX: "exercises",
+            TEACHER_LESSON_HOMEWORK_PREFIX: "homework",
+            TEACHER_LESSON_AI_PREFIX: "ai",
+        }
+        await query.edit_message_text(_format_lesson_section(summary, section_by_prefix[prefix]), reply_markup=_lesson_section_keyboard(lesson_id))
+        return
 
 def _resolver(context: ContextTypes.DEFAULT_TYPE) -> RoleResolver:
     settings: Settings = context.application.bot_data["settings"]

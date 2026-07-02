@@ -94,7 +94,7 @@ Teacher menu содержит кнопку `📚 Lessons`. Внутри разд
 
 - список lessons с пустым состоянием, кнопками открытия `Lesson <id>`, `➕ Создать lesson` и `⬅️ Назад`;
 - `➕ Создать lesson` — teacher вводит только название урока, после чего создаётся draft lesson и сразу показывается detail screen;
-- lesson detail показывает title, status, количество words и homework tasks, а также кнопку `⬅️ К списку lessons`.
+- lesson detail организован как секции `Words`, `Grammar`, `Exercises`, `Homework`, `AI Assistant`; экран показывает title, status, counts для words/homework и placeholder counts `0` для grammar/exercises.
 
 Этот UI не добавляет слова в урок, не публикует уроки, не создаёт домашние задания ученику, не вызывает AI-генерацию и не меняет game flow.
 
@@ -403,7 +403,7 @@ Future statuses:
 - `PUBLISHED`
 - `ARCHIVED`
 
-Teacher Lesson UI currently supports listing and creating draft lessons. Words, grammar, exercises, homework, reports and AI generation will be added in separate PRs.
+Teacher Lesson UI currently supports listing and creating draft lessons. Teacher Lesson Detail is organized as sections: Words, Grammar, Exercises, Homework, AI Assistant. Current implementation only provides navigation placeholders; actual editing and AI generation are separate future PRs.
 
 В будущем урок будет связывать четыре направления данных:
 

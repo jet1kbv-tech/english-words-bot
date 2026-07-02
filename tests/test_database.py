@@ -211,6 +211,9 @@ class LessonDatabaseTests(unittest.TestCase):
 
         self.assertEqual(summary["words_count"], 1)
         self.assertEqual(summary["homework_tasks_count"], 1)
+        self.assertEqual(summary["homework_count"], 1)
+        self.assertEqual(summary["grammar_count"], 0)
+        self.assertEqual(summary["exercises_count"], 0)
 
     def test_create_lesson_creates_lesson(self) -> None:
         lesson = self.db.create_lesson(

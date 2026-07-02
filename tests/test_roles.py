@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
-from app.handlers.teacher import _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
 
@@ -55,14 +55,16 @@ class TeacherLessonUiTests(unittest.TestCase):
         self.assertIn("Пока нет уроков.", _format_lessons_screen([]))
 
     def test_lesson_detail_formatter_shows_counts(self) -> None:
-        summary = {"title": "Lesson 15 — Food", "status": "DRAFT", "words_count": 0, "homework_tasks_count": 0}
+        summary = {"title": "Lesson 15 — Food", "status": "DRAFT", "words_count": 2, "grammar_count": 0, "exercises_count": 0, "homework_count": 1}
 
         formatted = _format_lesson_detail(summary)
 
         self.assertIn("Title: Lesson 15 — Food", formatted)
         self.assertIn("Status: Draft", formatted)
-        self.assertIn("Words: 0", formatted)
-        self.assertIn("Homework tasks: 0", formatted)
+        self.assertIn("📖 Words: 2", formatted)
+        self.assertIn("📝 Grammar: 0", formatted)
+        self.assertIn("✏️ Exercises: 0", formatted)
+        self.assertIn("🏠 Homework: 1", formatted)
 
     def test_lesson_formatters_show_requested_fields(self) -> None:
         lesson = {"title": "Past Simple", "theme": None, "grammar_topic": "Past Simple", "status": "DRAFT"}
@@ -151,6 +153,20 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         message.reply_text = reply_text
         return self.SimpleNamespace(effective_user=self.SimpleNamespace(id=101, username="romateaches"), effective_message=message)
 
+    def _callback_update(self, data: str, username: str = "romateaches", user_id: int = 101):
+        message = self.SimpleNamespace(replies=[])
+        async def reply_text(reply, reply_markup=None):
+            message.replies.append((reply, reply_markup))
+        message.reply_text = reply_text
+        query = self.SimpleNamespace(data=data, message=message, edits=[], answered=False)
+        async def answer():
+            query.answered = True
+        async def edit_message_text(text, reply_markup=None):
+            query.edits.append((text, reply_markup))
+        query.answer = answer
+        query.edit_message_text = edit_message_text
+        return self.SimpleNamespace(effective_user=self.SimpleNamespace(id=user_id, username=username), effective_message=message, callback_query=query)
+
 
     async def test_teacher_can_open_lessons_screen(self) -> None:
         update = self._update(TEACHER_LESSONS)
@@ -164,6 +180,46 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await handle_teacher_message(update, self.context))
         self.assertEqual(update.effective_message.replies, [])
+
+
+    async def test_lesson_section_callbacks_show_placeholders_and_back(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        for prefix, expected in [
+            (TEACHER_LESSON_WORDS_PREFIX, "Этот раздел скоро позволит добавлять и редактировать слова урока."),
+            (TEACHER_LESSON_GRAMMAR_PREFIX, "Этот раздел скоро позволит добавлять грамматическую тему и объяснения."),
+            (TEACHER_LESSON_EXERCISES_PREFIX, "Этот раздел скоро позволит добавлять упражнения урока."),
+            (TEACHER_LESSON_HOMEWORK_PREFIX, "Этот раздел скоро позволит собрать домашнее задание по уроку."),
+            (TEACHER_LESSON_AI_PREFIX, "Скоро здесь можно будет сгенерировать слова"),
+        ]:
+            with self.subTest(prefix=prefix):
+                update = self._callback_update(f"{prefix}{lesson['id']}")
+
+                await handle_teacher_lesson_callback(update, self.context)
+
+                self.assertIn(expected, update.callback_query.edits[-1][0])
+                self.assertIn("Lesson: Lesson 15 — Food", update.callback_query.edits[-1][0])
+
+        back = self._callback_update(f"{TEACHER_LESSON_BACK_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(back, self.context)
+
+        self.assertIn("📚 Lesson", back.callback_query.edits[-1][0])
+        self.assertIn("📖 Words: 0", back.callback_query.edits[-1][0])
+
+    async def test_lesson_section_callback_missing_lesson_is_safe(self) -> None:
+        update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}999")
+
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.message.replies[-1][0], "Lesson не найден.")
+
+    async def test_student_cannot_access_lesson_section_callbacks(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}{lesson['id']}", username="privetnormalno", user_id=103)
+
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.edits, [])
+        self.assertEqual(update.callback_query.message.replies, [])
 
     async def test_teacher_can_add_student(self) -> None:
         first = self._update(ADD_STUDENT)
