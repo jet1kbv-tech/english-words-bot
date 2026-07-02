@@ -7,6 +7,7 @@ from app.auth.roles import Role, RoleResolver, is_user_allowed
 from app.config import Settings
 from app.database import Database
 from app.keyboards import main_menu_keyboard, teacher_menu_keyboard
+from app.tutorial.tutorial_service import format_tutorial_step, should_start_first_run, start_tutorial_state, tutorial_keyboard
 
 
 def normalize_username(username: str | None) -> str:
@@ -55,11 +56,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     role = resolver.role_for(username)
     if role is Role.TEACHER:
         context.user_data.pop("impersonated_user_id", None)
+        if should_start_first_run(context.application.bot_data["db"], int(user["id"]), "TEACHER"):
+            tutorial = start_tutorial_state(context, "teacher_onboarding", first_run=True)
+            if tutorial is not None:
+                await update.effective_message.reply_text(format_tutorial_step(tutorial, 0), reply_markup=tutorial_keyboard(0, len(tutorial.steps)))
+                return
         reply_markup = teacher_menu_keyboard()
         message = f"Привет, {user['display_name']}! Выберите действие в teacher menu."
     else:
         context.user_data.pop("admin_teacher_view", None)
         context.user_data.pop("impersonated_user_id", None)
+        if role is Role.STUDENT and should_start_first_run(context.application.bot_data["db"], int(user["id"]), "STUDENT"):
+            tutorial = start_tutorial_state(context, "student_onboarding", first_run=True)
+            if tutorial is not None:
+                await update.effective_message.reply_text(format_tutorial_step(tutorial, 0), reply_markup=tutorial_keyboard(0, len(tutorial.steps)))
+                return
         reply_markup = main_menu_keyboard(include_admin=role is Role.ADMIN)
         message = f"Привет, {user['display_name']}! Выберите действие в меню."
     await update.effective_message.reply_text(message, reply_markup=reply_markup)

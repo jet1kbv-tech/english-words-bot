@@ -608,3 +608,15 @@ Lesson Runtime determines the next section independently of Telegram handlers.
 Future lesson flow is driven by Runtime rather than hardcoded navigation.
 
 `app/lesson_runtime.py` owns the section enum and `LessonRuntimeService.get_next_section(lesson_id, student_username)`. The student Lesson Overview handler asks this service for the next stage when a student presses `▶ Начать урок`; handlers only render the returned stage and protect access through the existing lesson assignment lookup. The initial runtime always returns `WORDS` for an assigned student and leaves `GRAMMAR`, `EXERCISES`, `HOMEWORK`, and `FINISHED` as future runtime states without adding new database tables.
+
+## Tutorial / Help / Notifications Foundation
+
+Tutorial Framework provides reusable onboarding/help content.
+
+TutorialStep may include feature_key for future feature-specific onboarding and announcements.
+
+First-run onboarding is tracked in user_tutorials.
+
+Product notification foundation is stored in product_notifications.
+
+Lesson assignment may trigger best-effort student notifications without affecting assignment persistence.

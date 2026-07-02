@@ -170,12 +170,33 @@ class Database:
                 feedback TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS user_tutorials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                tutorial_key TEXT NOT NULL,
+                completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, tutorial_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS product_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL UNIQUE,
+                role TEXT,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                feature_key TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         self._connection.commit()
         self._ensure_daily_activity_xp_column()
         self._ensure_lessons_schema()
         self._ensure_lesson_students_schema()
+        self._ensure_tutorial_notifications_schema()
 
     def _ensure_daily_activity_xp_column(self) -> None:
         columns = {row["name"] for row in self.fetchall("PRAGMA table_info(daily_activity)")}
@@ -250,6 +271,31 @@ class Database:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_students_one_active_per_lesson
             ON lesson_students(lesson_id)
             WHERE is_active = 1;
+            """
+        )
+        self._connection.commit()
+
+    def _ensure_tutorial_notifications_schema(self) -> None:
+        self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS user_tutorials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                tutorial_key TEXT NOT NULL,
+                completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, tutorial_key)
+            );
+            CREATE TABLE IF NOT EXISTS product_notifications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL UNIQUE,
+                role TEXT,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                feature_key TEXT,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         self._connection.commit()
@@ -381,6 +427,50 @@ class Database:
     def get_user_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
 
+    def get_user_by_username(self, username: str) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM users WHERE lower(username) = ?", (self.normalize_username(username),))
+
+    def has_completed_tutorial(self, user_id: int, tutorial_key: str) -> bool:
+        return self.fetchone("SELECT 1 FROM user_tutorials WHERE user_id = ? AND tutorial_key = ?", (user_id, tutorial_key)) is not None
+
+    def mark_tutorial_completed(self, user_id: int, username: str | None, tutorial_key: str) -> None:
+        self.execute(
+            """
+            INSERT INTO user_tutorials (user_id, username, tutorial_key)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id, tutorial_key) DO UPDATE SET
+                username = excluded.username,
+                completed_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, self.normalize_username(username), tutorial_key),
+        )
+
+    def reset_tutorial(self, user_id: int, tutorial_key: str) -> None:
+        self.execute("DELETE FROM user_tutorials WHERE user_id = ? AND tutorial_key = ?", (user_id, tutorial_key))
+
+    def create_product_notification(self, key: str, role: str | None, title: str, body: str, feature_key: str | None = None, is_active: bool = True) -> sqlite3.Row:
+        self.execute(
+            """
+            INSERT INTO product_notifications (key, role, title, body, feature_key, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                role = excluded.role, title = excluded.title, body = excluded.body,
+                feature_key = excluded.feature_key, is_active = excluded.is_active
+            """,
+            (key, role, title, body, feature_key, 1 if is_active else 0),
+        )
+        row = self.fetchone("SELECT * FROM product_notifications WHERE key = ?", (key,))
+        if row is None:
+            raise RuntimeError("Failed to create product notification")
+        return row
+
+    def list_active_product_notifications(self, role: str | None = None) -> list[sqlite3.Row]:
+        if role is None:
+            return self.fetchall("SELECT * FROM product_notifications WHERE is_active = 1 ORDER BY created_at DESC, id DESC")
+        return self.fetchall(
+            "SELECT * FROM product_notifications WHERE is_active = 1 AND (role IS NULL OR role = ?) ORDER BY created_at DESC, id DESC",
+            (role,),
+        )
 
 
     def create_teacher_lesson(self, title: str, teacher_user_id: int | None = None) -> sqlite3.Row:

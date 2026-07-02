@@ -34,6 +34,8 @@ ADMIN_STUDENT_VIEW = "👨‍🎓 Войти как ученик"
 ADMIN_TEACHER_VIEW = "👩‍🏫 Войти как учитель"
 ADMIN_USERS = "📊 Все пользователи"
 ADMIN_MY_MENU = "↩️ Моё меню"
+HELP = "❓ Помощь"
+HELP_GETTING_STARTED = "🚀 Начало работы"
 
 # Backward-compatible aliases for old imports / older Telegram keyboards.
 ALL_WORDS = WORD_EXCHANGE
@@ -46,6 +48,7 @@ def main_menu_keyboard(include_exit_student_mode: bool = False, include_admin: b
         [KeyboardButton(REVIEW)],
         [KeyboardButton(PROGRESS)],
         [KeyboardButton(SETTINGS)],
+        [KeyboardButton(HELP)],
     ]
     if include_admin:
         rows.append([KeyboardButton(ADMIN_MENU)])
@@ -75,6 +78,7 @@ def teacher_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(TEACHER_IMPERSONATE)],
             [KeyboardButton(TEACHER_LESSONS)],
             [KeyboardButton(ADD_STUDENT)],
+            [KeyboardButton(HELP)],
         ],
         resize_keyboard=True,
     )
