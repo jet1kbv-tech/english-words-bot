@@ -13,6 +13,8 @@ class Settings:
     database_path: Path
     log_level: str
     allowed_usernames: frozenset[str]
+    admin_usernames: frozenset[str]
+    teacher_usernames: frozenset[str]
     display_names: dict[str, str]
 
 
@@ -26,6 +28,8 @@ def load_settings() -> Settings:
         bot_token=token,
         database_path=Path(os.getenv("DATABASE_PATH", "english_words_bot.sqlite3")),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        allowed_usernames=frozenset({"wp_bvv", "privetnormalno"}),
-        display_names={"wp_bvv": "Вова", "privetnormalno": "Саша"},
+        allowed_usernames=frozenset({"privetnormalno"}),
+        admin_usernames=frozenset({"wp_bvv"}),
+        teacher_usernames=frozenset({"romateaches"}),
+        display_names={"wp_bvv": "Вова", "privetnormalno": "Саша", "romateaches": "Roma"},
     )
