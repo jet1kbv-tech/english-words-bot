@@ -22,22 +22,41 @@ TEACHER_STUDENTS = "👤 Ученики"
 TEACHER_PROGRESS = "📊 Прогресс ученика"
 TEACHER_IMPERSONATE = "👀 Режим ученика"
 EXIT_STUDENT_MODE = "↩️ Выйти из режима ученика"
+ADMIN_MENU = "🛠 Админ"
+ADMIN_STUDENT_VIEW = "👨‍🎓 Войти как ученик"
+ADMIN_TEACHER_VIEW = "👩‍🏫 Войти как учитель"
+ADMIN_USERS = "📊 Все пользователи"
+ADMIN_MY_MENU = "↩️ Моё меню"
 
 # Backward-compatible aliases for old imports / older Telegram keyboards.
 ALL_WORDS = WORD_EXCHANGE
 ALL_CARDS = WORD_EXCHANGE
 
 
-def main_menu_keyboard(include_exit_student_mode: bool = False) -> ReplyKeyboardMarkup:
+def main_menu_keyboard(include_exit_student_mode: bool = False, include_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
         [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
         [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
         [KeyboardButton(MY_MISTAKES), KeyboardButton(PROGRESS)],
     ]
+    if include_admin:
+        rows.append([KeyboardButton(ADMIN_MENU)])
     if include_exit_student_mode:
         rows.append([KeyboardButton(EXIT_STUDENT_MODE)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def admin_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(ADMIN_STUDENT_VIEW)],
+            [KeyboardButton(ADMIN_TEACHER_VIEW)],
+            [KeyboardButton(ADMIN_USERS)],
+            [KeyboardButton(ADMIN_MY_MENU)],
+        ],
+        resize_keyboard=True,
+    )
 
 
 def teacher_menu_keyboard() -> ReplyKeyboardMarkup:

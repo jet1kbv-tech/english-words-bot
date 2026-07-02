@@ -174,6 +174,18 @@ journalctl -u english-words-bot -f
 - автоматическое определение темы;
 - мини-тесты и упражнения.
 
+
+### Admin role
+
+Пользователь с ролью `ADMIN` определяется через `RoleResolver` по `admin_usernames` и при `/start` видит обычное student menu плюс кнопку `🛠 Админ`. Admin role не добавляет lessons/homework и не меняет game flow.
+
+Admin menu:
+
+- 👨‍🎓 Войти как ученик — выбор student user и impersonation через `context.user_data["impersonated_user_id"]`; действия выполняются как выбранный ученик, telegram_id admin не меняется, дубли users не создаются. Для выхода есть кнопка ↩️ Выйти из режима ученика.
+- 👩‍🏫 Войти как учитель — включает teacher-view для admin и показывает teacher menu без добавления admin в `TEACHER_USERNAMES`.
+- 📊 Все пользователи — показывает username, display_name, роль, total words и streak.
+- ↩️ Моё меню — возвращает обычное admin student menu.
+
 ### Teacher role
 
 Пользователь с ролью `TEACHER` определяется через `RoleResolver` по `teacher_usernames` и при `/start` видит отдельное teacher menu вместо student menu:
