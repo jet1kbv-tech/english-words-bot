@@ -129,6 +129,31 @@ class Database:
     def get_user_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
 
+    def get_user_by_username(self, username: str) -> sqlite3.Row | None:
+        return self.fetchone("SELECT * FROM users WHERE lower(username) = lower(?)", (username,))
+
+    def student_progress(self, user_id: int, activity_date: str) -> dict[str, Any]:
+        activity = self.get_daily_activity(user_id, activity_date)
+        weak_words = self.fetchall(
+            """
+            SELECT words.english, words.translation, word_progress.score, word_progress.times_forgotten
+            FROM word_progress
+            JOIN words ON words.id = word_progress.word_id
+            WHERE word_progress.user_id = ?
+              AND word_progress.times_seen > 0
+            ORDER BY word_progress.score ASC, word_progress.times_forgotten DESC, word_progress.updated_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        )
+        return {
+            "total_words": self.count_words(user_id),
+            "cards_today": int(activity["cards_reviewed"]) if activity else 0,
+            "xp_today": int(activity["cards_reviewed"]) if activity else 0,
+            "streak": int(activity["streak_days"]) if activity else 0,
+            "weak_words": weak_words,
+        }
+
     def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
         english = english.strip()
         translation = translation.strip()

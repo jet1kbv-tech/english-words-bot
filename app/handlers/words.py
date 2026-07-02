@@ -6,7 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from app.database import Database
-from app.handlers.start import require_user
+from app.handlers.start import require_user, student_mode_keyboard
 from app.keyboards import main_menu_keyboard
 
 ENGLISH, TRANSLATION, TOPIC, EXAMPLE, BULK_WORDS = range(5)
@@ -121,14 +121,14 @@ async def example_step(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     db: Database = context.application.bot_data["db"]
     added = db.add_word(user["id"], data["english"], data["translation"], data.get("topic"), None if text in {"", "-"} else text)
     message = "Готово! Слово добавлено в ваш словарь." if added else "Такое слово уже есть в вашем словаре. Дубль не добавлен."
-    await update.effective_message.reply_text(message, reply_markup=main_menu_keyboard())
+    await update.effective_message.reply_text(message, reply_markup=student_mode_keyboard(context))
     return ConversationHandler.END
 
 
 async def cancel_add_word(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop("new_word", None)
     context.user_data.pop("bulk_words", None)
-    await update.effective_message.reply_text("Добавление слова отменено.", reply_markup=main_menu_keyboard())
+    await update.effective_message.reply_text("Добавление слова отменено.", reply_markup=student_mode_keyboard(context))
     return ConversationHandler.END
 
 
@@ -180,7 +180,7 @@ async def bulk_words_step(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             duplicates += 1
     await update.effective_message.reply_text(
         f"Добавлено: {added}\nПропущено: {skipped}\nДубли: {duplicates}",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=student_mode_keyboard(context),
     )
     return ConversationHandler.END
 
@@ -191,7 +191,7 @@ async def show_dictionary(update: Update, context: ContextTypes.DEFAULT_TYPE, on
         return
     words = _dictionary_words(context, user["id"])
     if not words:
-        await update.effective_message.reply_text("📚 Мой словарь пока пуст.", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("📚 Мой словарь пока пуст.", reply_markup=student_mode_keyboard(context))
         return
     text, keyboard = build_dictionary_page(words, 0)
     await update.effective_message.reply_text(text, reply_markup=keyboard)
@@ -286,7 +286,7 @@ async def dictionary_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     await query.edit_message_text("Вернулись в меню.")
     if update.effective_message:
-        await update.effective_message.reply_text("Выберите действие:", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("Выберите действие:", reply_markup=student_mode_keyboard(context))
 
 
 async def cancel_delete_word(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

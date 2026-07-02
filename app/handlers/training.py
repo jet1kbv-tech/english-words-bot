@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 
 from app.database import Database
 from app.ai.service import check_text_answer
-from app.handlers.start import require_user
+from app.handlers.start import require_user, student_mode_keyboard
 from app.keyboards import answer_keyboard, main_menu_keyboard, text_input_keyboard, training_keyboard
 
 EN_TO_RU = "EN_TO_RU"
@@ -144,7 +144,7 @@ async def start_training(update: Update, context: ContextTypes.DEFAULT_TYPE, onl
     db: Database = context.application.bot_data["db"]
     words = db.list_training_words(user["id"])
     if not words:
-        await update.effective_message.reply_text("Пока нет слов для тренировки. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("Пока нет слов для тренировки. Сначала добавьте слово.", reply_markup=student_mode_keyboard(context))
         return
     words = _weighted_word_order(words)
     context.user_data["training"] = {
@@ -164,7 +164,7 @@ async def start_game_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     db: Database = context.application.bot_data["db"]
     words = db.list_training_words(user["id"])
     if not words:
-        await update.effective_message.reply_text("Пока нет слов для игры. Сначала добавьте слово.", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("Пока нет слов для игры. Сначала добавьте слово.", reply_markup=student_mode_keyboard(context))
         return
     words = build_game_session_words(words)
     session_id = db.start_study_session(user["id"], len(words))
@@ -192,7 +192,7 @@ async def start_exchange(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     db: Database = context.application.bot_data["db"]
     words = db.list_partner_training_words(user["id"])
     if not words:
-        await update.effective_message.reply_text("Пока нет слов партнёра для обмена.", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("Пока нет слов партнёра для обмена.", reply_markup=student_mode_keyboard(context))
         return
     words = _weighted_word_order(words)
     context.user_data["training"] = {
@@ -227,7 +227,7 @@ async def _finish_game(update: Update, context: ContextTypes.DEFAULT_TYPE, sessi
         f"• пропущено: {skipped}\n"
         f"• streak: {activity['streak_days']} дн.\n"
         f"• уровень дня: {activity['day_level']}",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=student_mode_keyboard(context),
     )
 
 
@@ -240,7 +240,7 @@ async def send_current_card(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await _finish_game(update, context, session)
         else:
             context.user_data.pop("training", None)
-            await update.effective_message.reply_text("Тренировка завершена: карточки закончились.", reply_markup=main_menu_keyboard())
+            await update.effective_message.reply_text("Тренировка завершена: карточки закончились.", reply_markup=student_mode_keyboard(context))
         return
     session.pop("last_positive_answer", None)
     session.pop("last_negative_text_answer", None)
@@ -271,7 +271,7 @@ async def show_translation(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     words = session.get("words", [])
     index = session.get("index", 0)
     if not words or index >= len(words):
-        await update.effective_message.reply_text("Активной тренировки нет.", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("Активной тренировки нет.", reply_markup=student_mode_keyboard(context))
         return
     word = words[index]
     direction = _card_direction(session, index)
@@ -286,7 +286,7 @@ async def mark_card(update: Update, context: ContextTypes.DEFAULT_TYPE, remember
     if user is None or update.effective_message is None:
         return
     if not words or index >= len(words):
-        await update.effective_message.reply_text("Активной тренировки нет.", reply_markup=main_menu_keyboard())
+        await update.effective_message.reply_text("Активной тренировки нет.", reply_markup=student_mode_keyboard(context))
         return
     word = words[index]
     if session.get("awaiting_text_input"):
@@ -463,7 +463,7 @@ async def stop_training(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _finish_game(update, context, session)
         return
     context.user_data.pop("training", None)
-    await update.effective_message.reply_text("Тренировка остановлена.", reply_markup=main_menu_keyboard())
+    await update.effective_message.reply_text("Тренировка остановлена.", reply_markup=student_mode_keyboard(context))
 
 
 async def show_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -483,7 +483,7 @@ async def show_progress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• средний score: {summary['average_score']:.2f}\n"
         f"• streak: {streak} дн.\n"
         f"• уровень дня: {day_level}",
-        reply_markup=main_menu_keyboard(),
+        reply_markup=student_mode_keyboard(context),
     )
 
 

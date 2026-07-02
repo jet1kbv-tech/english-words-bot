@@ -7,6 +7,11 @@ WORD_EXCHANGE = "🔄 Обмен словами"
 MY_CARDS = "🎯 Мои карточки"
 GAME_SESSION = "🎮 Игра на 10 слов"
 PROGRESS = "📊 Прогресс"
+TEACHER_STUDENTS = "👤 Ученики"
+TEACHER_ADD_WORD = "➕ Добавить слово ученику"
+TEACHER_PROGRESS = "📊 Прогресс ученика"
+TEACHER_VIEW_AS_STUDENT = "👀 Режим ученика"
+EXIT_STUDENT_MODE = "↩️ Выйти из режима ученика"
 SHOW_TRANSLATION = "👀 Показать ответ"
 REMEMBER = "✅ Помню"
 FORGET = "❌ Не помню"
@@ -23,13 +28,25 @@ ALL_WORDS = WORD_EXCHANGE
 ALL_CARDS = WORD_EXCHANGE
 
 
-def main_menu_keyboard() -> ReplyKeyboardMarkup:
+def main_menu_keyboard(include_exit_student_mode: bool = False) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
+        [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
+        [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
+        [KeyboardButton(PROGRESS)],
+    ]
+    if include_exit_student_mode:
+        rows.append([KeyboardButton(EXIT_STUDENT_MODE)])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def teacher_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
-            [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
-            [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
-            [KeyboardButton(PROGRESS)],
+            [KeyboardButton(TEACHER_STUDENTS)],
+            [KeyboardButton(TEACHER_ADD_WORD)],
+            [KeyboardButton(TEACHER_PROGRESS)],
+            [KeyboardButton(TEACHER_VIEW_AS_STUDENT)],
         ],
         resize_keyboard=True,
     )
