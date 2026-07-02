@@ -18,19 +18,34 @@ NEXT_CARD = "➡️ Следующая карточка"
 STOP = "🛑 Закончить"
 MISTAKE = "😬 Ошибся"
 I_WAS_RIGHT = "😬 Я был прав"
+TEACHER_STUDENTS = "👤 Ученики"
+TEACHER_PROGRESS = "📊 Прогресс ученика"
+TEACHER_IMPERSONATE = "👀 Режим ученика"
+EXIT_STUDENT_MODE = "↩️ Выйти из режима ученика"
 
 # Backward-compatible aliases for old imports / older Telegram keyboards.
 ALL_WORDS = WORD_EXCHANGE
 ALL_CARDS = WORD_EXCHANGE
 
 
-def main_menu_keyboard() -> ReplyKeyboardMarkup:
+def main_menu_keyboard(include_exit_student_mode: bool = False) -> ReplyKeyboardMarkup:
+    rows = [
+        [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
+        [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
+        [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
+        [KeyboardButton(MY_MISTAKES), KeyboardButton(PROGRESS)],
+    ]
+    if include_exit_student_mode:
+        rows.append([KeyboardButton(EXIT_STUDENT_MODE)])
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+def teacher_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
-            [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
-            [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
-            [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
-            [KeyboardButton(MY_MISTAKES), KeyboardButton(PROGRESS)],
+            [KeyboardButton(TEACHER_STUDENTS)],
+            [KeyboardButton(TEACHER_PROGRESS)],
+            [KeyboardButton(TEACHER_IMPERSONATE)],
         ],
         resize_keyboard=True,
     )

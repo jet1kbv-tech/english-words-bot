@@ -173,3 +173,13 @@ journalctl -u english-words-bot -f
 - массовый импорт списка английских слов без переводов;
 - автоматическое определение темы;
 - мини-тесты и упражнения.
+
+### Teacher role
+
+Пользователь с ролью `TEACHER` определяется через `RoleResolver` по `teacher_usernames` и при `/start` видит отдельное teacher menu вместо student menu:
+
+- 👤 Ученики — список student users из `allowed_usernames`; admin/teacher usernames исключаются.
+- 📊 Прогресс ученика — выбор ученика и сводка: всего слов, карточек сегодня, XP сегодня, streak и top-10 слабых слов.
+- 👀 Режим ученика — выбор ученика и временное impersonation в `context.user_data`; telegram_id teacher не меняется, новые пользователи не создаются. Для выхода есть кнопка ↩️ Выйти из режима ученика.
+
+Teacher role не добавляет admin-функций, lessons/homework и не меняет game flow.
