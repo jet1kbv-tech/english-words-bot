@@ -247,3 +247,28 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertEqual(task["expected_answer"], "путешествие")
         self.assertEqual(task["metadata_json"], '{"source":"manual"}')
         self.assertEqual(task["order_index"], 2)
+
+
+class TeacherLessonListTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.student = self.db.upsert_user(30, "student", "Student")
+        self.teacher = self.db.upsert_user(31, "teacher", "Teacher")
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_list_lessons_for_teacher_includes_student_and_limit(self) -> None:
+        for index in range(12):
+            self.db.create_lesson(self.student["id"], self.teacher["id"], f"Lesson {index}", theme="Theme")
+
+        lessons = self.db.list_lessons_for_teacher(self.teacher["id"], limit=10)
+
+        self.assertEqual(len(lessons), 10)
+        self.assertEqual(lessons[0]["title"], "Lesson 11")
+        self.assertEqual(lessons[0]["student_display_name"], "Student")
+        self.assertEqual(lessons[0]["student_username"], "student")
+        self.assertEqual(lessons[0]["status"], "draft")
