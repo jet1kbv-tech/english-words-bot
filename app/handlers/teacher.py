@@ -24,9 +24,11 @@ _OPTIONAL_SKIP = {"", "-", "пропустить", "skip"}
 _ADD_STUDENT = "teacher_add_student"
 _IMPORT_LESSON_WORDS = "teacher_import_lesson_words"
 _EDIT_LESSON_WORD = "teacher_edit_lesson_word"
+_EDIT_AI_TRANSLATION_DRAFT = "edit_ai_translation_draft"
 _PENDING_WORD_EDIT = "pending_lesson_word_edit"
 _PENDING_LESSON_WORDS = "pending_lesson_words"
 _PENDING_AI_TRANSLATION = "pending_ai_translation"
+_PENDING_AI_TRANSLATION_EDIT = "pending_ai_translation_edit"
 _SELECTED_LESSON_WORDS = "selected_lesson_words"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
@@ -48,6 +50,8 @@ TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX = "teacher:lesson:words:select:done:"
 TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX = "teacher:lesson:words:ai_translate:"
 TEACHER_LESSON_WORDS_AI_APPLY_PREFIX = "teacher:lesson:words:ai_apply:"
 TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX = "teacher:lesson:words:ai_cancel:"
+TEACHER_LESSON_WORDS_AI_EDIT_PREFIX = "teacher:lesson:words:ai_edit:"
+TEACHER_LESSON_WORDS_AI_PREVIEW_PREFIX = "teacher:lesson:words:ai_preview:"
 TEACHER_LESSON_WORD_OPEN_PREFIX = "teacher:lesson:word:open:"
 TEACHER_LESSON_WORDS_CONFIRM_PREFIX = "teacher:lesson:words:confirm:"
 TEACHER_LESSON_WORDS_CANCEL_PREFIX = "teacher:lesson:words:cancel:"
@@ -65,6 +69,8 @@ TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_WORDS_CANCEL_PREFIX,
     TEACHER_LESSON_WORD_OPEN_PREFIX,
     TEACHER_LESSON_WORD_EDIT_PREFIX,
+    TEACHER_LESSON_WORDS_AI_EDIT_PREFIX,
+    TEACHER_LESSON_WORDS_AI_PREVIEW_PREFIX,
 )
 
 
@@ -247,16 +253,61 @@ def _lesson_words_preview_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
 
 def _format_ai_translation_preview(translations: list[dict[str, str]]) -> str:
     lines = ["Будут обновлены переводы", ""]
-    for item in translations:
-        lines.extend([str(item["english"]), "", f"→ {item['translation']}", ""])
+    for index, item in enumerate(translations, start=1):
+        translation = item.get("translation") or ""
+        lines.extend([f"{index}. {item['english']}", f"→ {translation}", ""])
     return "\n".join(lines).rstrip()
 
 
-def _ai_translation_preview_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def _ai_translation_preview_keyboard(lesson_id: int, translations: list[dict[str, str]] | None = None) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(f"✏️ {item['english']}", callback_data=f"{TEACHER_LESSON_WORDS_AI_EDIT_PREFIX}{lesson_id}:{item['word_id']}")]
+        for item in (translations or [])[:20]
+    ]
+    rows.extend([
         [InlineKeyboardButton("✅ Применить", callback_data=f"{TEACHER_LESSON_WORDS_AI_APPLY_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX}{lesson_id}")],
     ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _ai_translation_fallback_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")]])
+
+
+def _ai_translation_missing_item_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ К preview", callback_data=f"{TEACHER_LESSON_WORDS_AI_PREVIEW_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX}{lesson_id}")],
+    ])
+
+
+def _ai_translation_draft_for_lesson(context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> list[dict[str, str]] | None:
+    draft = context.user_data.get(_PENDING_AI_TRANSLATION) or {}
+    translations = draft.get("translations") if int(draft.get("lesson_id", 0)) == lesson_id else None
+    return translations if isinstance(translations, list) else None
+
+
+def _find_ai_translation_draft_item(translations: list[dict[str, str]], word_id: int) -> dict[str, str] | None:
+    for item in translations:
+        if int(item.get("word_id", 0)) == word_id:
+            return item
+    return None
+
+
+def _clear_ai_translation_state(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.pop(_PENDING_AI_TRANSLATION, None)
+    context.user_data.pop(_PENDING_AI_TRANSLATION_EDIT, None)
+    if context.user_data.get("teacher_action") == _EDIT_AI_TRANSLATION_DRAFT:
+        context.user_data.pop("teacher_action", None)
+
+
+def _ai_translation_edit_ids_from_callback(data: str) -> tuple[int, int] | None:
+    ids_text = data.removeprefix(TEACHER_LESSON_WORDS_AI_EDIT_PREFIX).strip()
+    lesson_id_text, separator, word_id_text = ids_text.partition(":")
+    if separator != ":" or not lesson_id_text.isdigit() or not word_id_text.isdigit():
+        return None
+    return int(lesson_id_text), int(word_id_text)
 
 
 def _selected_word_rows(service: LessonService, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> list:
@@ -403,6 +454,44 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         if query.message is not None:
             await query.message.reply_text(_format_lessons_screen(lessons), reply_markup=_lessons_list_keyboard(lessons))
         return
+    if data.startswith(TEACHER_LESSON_WORDS_AI_EDIT_PREFIX):
+        ids = _ai_translation_edit_ids_from_callback(data)
+        if ids is None:
+            return
+        lesson_id, word_id = ids
+        if service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            return
+        translations = _ai_translation_draft_for_lesson(context, lesson_id)
+        if not translations:
+            _clear_ai_translation_state(context)
+            await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            return
+        item = _find_ai_translation_draft_item(translations, word_id)
+        if item is None:
+            await query.edit_message_text("Draft item не найден.", reply_markup=_ai_translation_missing_item_keyboard(lesson_id))
+            return
+        if service.get_lesson_word(lesson_id, word_id) is None:
+            _clear_ai_translation_state(context)
+            await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            return
+        context.user_data["teacher_action"] = _EDIT_AI_TRANSLATION_DRAFT
+        context.user_data[_PENDING_AI_TRANSLATION_EDIT] = {"lesson_id": lesson_id, "word_id": word_id}
+        await query.edit_message_text(
+            "\n".join([
+                "Введите новый перевод для:",
+                "",
+                str(item["english"]),
+                "",
+                "Текущий перевод:",
+                str(item.get("translation") or ""),
+                "",
+                "Чтобы очистить значение, отправьте:",
+                "-",
+            ])
+        )
+        return
+
     if data.startswith(TEACHER_LESSON_WORD_EDIT_PREFIX):
         parsed = _lesson_word_edit_from_callback(data)
         if parsed is None:
@@ -421,7 +510,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         await query.edit_message_text(f"{prompts[field]}\n\nЧтобы очистить поле, отправьте '-' или '—' или 'пусто'.")
         return
 
-    for ai_prefix in (TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX):
+    for ai_prefix in (TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX, TEACHER_LESSON_WORDS_AI_PREVIEW_PREFIX):
         if not data.startswith(ai_prefix):
             continue
         lesson_id = _lesson_id_from_callback(data, ai_prefix)
@@ -431,19 +520,26 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             return
         context.user_data["current_teacher_lesson_id"] = lesson_id
         if ai_prefix == TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX:
-            context.user_data.pop(_PENDING_AI_TRANSLATION, None)
+            _clear_ai_translation_state(context)
             await _show_lesson_words_selection(update, context, lesson_id)
             return
-        if ai_prefix == TEACHER_LESSON_WORDS_AI_APPLY_PREFIX:
-            draft = context.user_data.get(_PENDING_AI_TRANSLATION) or {}
-            translations = draft.get("translations") if int(draft.get("lesson_id", 0)) == lesson_id else None
+        if ai_prefix == TEACHER_LESSON_WORDS_AI_PREVIEW_PREFIX:
+            translations = _ai_translation_draft_for_lesson(context, lesson_id)
             if not translations:
-                context.user_data.pop(_PENDING_AI_TRANSLATION, None)
+                _clear_ai_translation_state(context)
+                await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+                return
+            await query.edit_message_text(_format_ai_translation_preview(translations), reply_markup=_ai_translation_preview_keyboard(lesson_id, translations))
+            return
+        if ai_prefix == TEACHER_LESSON_WORDS_AI_APPLY_PREFIX:
+            translations = _ai_translation_draft_for_lesson(context, lesson_id)
+            if not translations:
+                _clear_ai_translation_state(context)
                 await _show_lesson_words_selection(update, context, lesson_id)
                 return
             for item in translations:
-                db.update_word_translation(lesson_id, int(item["word_id"]), item["translation"])
-            context.user_data.pop(_PENDING_AI_TRANSLATION, None)
+                db.update_word_translation(lesson_id, int(item["word_id"]), item.get("translation") or "")
+            _clear_ai_translation_state(context)
             await _show_lesson_words(update, context, lesson_id, edit=True)
             return
         selected_rows = _selected_word_rows(service, context, lesson_id)
@@ -462,7 +558,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             for word in selected_rows
         ]
         context.user_data[_PENDING_AI_TRANSLATION] = {"lesson_id": lesson_id, "translations": draft_translations}
-        await query.edit_message_text(_format_ai_translation_preview(draft_translations), reply_markup=_ai_translation_preview_keyboard(lesson_id))
+        await query.edit_message_text(_format_ai_translation_preview(draft_translations), reply_markup=_ai_translation_preview_keyboard(lesson_id, draft_translations))
         return
     if data.startswith(TEACHER_LESSON_WORD_OPEN_PREFIX):
         ids = _lesson_word_ids_from_callback(data)
@@ -753,6 +849,33 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         return True
 
     action = context.user_data.get("teacher_action")
+    if action == _EDIT_AI_TRANSLATION_DRAFT:
+        edit = context.user_data.get(_PENDING_AI_TRANSLATION_EDIT) or {}
+        lesson_id = int(edit.get("lesson_id") or 0)
+        word_id = int(edit.get("word_id") or 0)
+        translations = _ai_translation_draft_for_lesson(context, lesson_id) if lesson_id else None
+        if not translations:
+            _clear_ai_translation_state(context)
+            await update.effective_message.reply_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            return True
+        item = _find_ai_translation_draft_item(translations, word_id) if word_id else None
+        if item is None:
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_AI_TRANSLATION_EDIT, None)
+            await update.effective_message.reply_text("Draft item не найден.", reply_markup=_ai_translation_missing_item_keyboard(lesson_id))
+            return True
+        value = text.strip()
+        if not value:
+            await update.effective_message.reply_text("Перевод не может быть пустым. Отправьте '-' или '—', чтобы очистить значение.")
+            return True
+        if len(value) > 500:
+            await update.effective_message.reply_text("Максимум 500 символов.")
+            return True
+        item["translation"] = "" if value in {"-", "—"} else value
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_AI_TRANSLATION_EDIT, None)
+        await update.effective_message.reply_text(_format_ai_translation_preview(translations), reply_markup=_ai_translation_preview_keyboard(lesson_id, translations))
+        return True
     if action == _EDIT_LESSON_WORD:
         draft = context.user_data.get(_PENDING_WORD_EDIT) or {}
         field = str(draft.get("field") or "")
