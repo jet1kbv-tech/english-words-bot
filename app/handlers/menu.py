@@ -5,6 +5,7 @@ from telegram.ext import ContextTypes
 
 from app.handlers.training import correct_last_negative_text_answer, correct_last_positive_answer, handle_text_input_answer, mark_card, send_current_card, show_progress, show_translation, start_exchange, start_game_session, start_mistakes_session, start_training, stop_training
 from app.handlers.words import show_dictionary
+from app.handlers.admin import handle_admin_message
 from app.handlers.teacher import handle_teacher_message
 from app.keyboards import DONT_KNOW, FORGET, GAME_SESSION, I_WAS_RIGHT, MY_MISTAKES, KNOW, MISTAKE, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
 
@@ -13,6 +14,8 @@ async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_message is None:
         return
     text = update.effective_message.text
+    if await handle_admin_message(update, context):
+        return
     if await handle_teacher_message(update, context):
         return
     if text == MY_WORDS:

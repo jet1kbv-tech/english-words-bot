@@ -110,7 +110,7 @@
 - `romateaches` → `TEACHER`, display name `Roma`
 - `privetnormalno` → `STUDENT`, display name `Саша`
 
-Наличие ролей пока не добавляет новых меню или flows: главное меню, тренировки, игра на 10 слов, ошибки и обмен словами остаются прежними. Все пользователи, прошедшие `is_user_allowed()`, используют существующий пользовательский flow. Все остальные получают отказ при `/start` или при попытке пройти `require_user()`.
+`ADMIN` получает обычное student menu с дополнительной кнопкой `🛠 Админ`; `TEACHER` получает отдельное teacher menu. Тренировки, игра на 10 слов, ошибки и обмен словами остаются прежними и работают через `require_user()`. Все остальные получают отказ при `/start` или при попытке пройти `require_user()`.
 
 ### 4.2 Владение данными
 
@@ -457,3 +457,17 @@ python -m unittest
 - режим ученика сохраняет `impersonated_user_id` в `context.user_data`. `require_user()` возвращает выбранного student user для действий, но не меняет telegram_id teacher и не делает `upsert_user()` для ученика, поэтому дубли пользователей не создаются.
 
 Остальной student game flow остаётся прежним: handlers слов, тренировок и игр продолжают работать с результатом `require_user()`.
+
+## Admin role
+
+Минимальный admin layer живёт поверх текущего main flow и использует `RoleResolver`. При `/start` admin остаётся в обычном student menu, но дополнительно видит кнопку `🛠 Админ`; lessons/homework не добавляются и game flow не меняется.
+
+`app/handlers/admin.py` обрабатывает только admin-действия:
+
+- `👨‍🎓 Войти как ученик` — выбор любого student user из student subset `allowed_usernames`; выбранный `users.id` сохраняется в `context.user_data["impersonated_user_id"]`, поэтому словарь/тренировки/игры выполняются как выбранный ученик без изменения telegram_id admin и без создания дублей; для выхода используется `↩️ Выйти из режима ученика`.
+- `👩‍🏫 Войти как учитель` — включает `context.user_data["admin_teacher_view"]` и показывает teacher menu, чтобы admin мог проверить teacher UX без попадания в `TEACHER_USERNAMES`.
+- `📊 Все пользователи` — выводит username, display_name, роль из `RoleResolver`, количество слов и текущий streak.
+- `↩️ Моё меню` — возвращает admin в обычное student menu с кнопкой `🛠 Админ`.
+
+`require_user()` разрешает impersonation для `ADMIN` и `TEACHER`, но возвращает существующего student user по `users.id`; `upsert_user()` продолжает применяться только к реальному Telegram user при входе, поэтому telegram_id admin не меняется и дубли users не создаются.
+

@@ -22,7 +22,7 @@ async def require_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = normalize_username(tg_user.username)
     resolver = RoleResolver(settings)
     impersonated_user_id = context.user_data.get("impersonated_user_id")
-    if impersonated_user_id and resolver.role_for(username) is Role.TEACHER:
+    if impersonated_user_id and resolver.role_for(username) in {Role.TEACHER, Role.ADMIN}:
         impersonated_user = db.get_user_by_id(int(impersonated_user_id))
         if impersonated_user is not None:
             return impersonated_user
@@ -52,11 +52,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     display_name = existing_user["display_name"] if existing_user else settings.display_names.get(username, username)
     user = context.application.bot_data["db"].upsert_user(tg_user.id, username or existing_user["username"], display_name)
     resolver = RoleResolver(settings)
-    if resolver.role_for(username) is Role.TEACHER:
+    role = resolver.role_for(username)
+    if role is Role.TEACHER:
         context.user_data.pop("impersonated_user_id", None)
         reply_markup = teacher_menu_keyboard()
         message = f"Привет, {user['display_name']}! Выберите действие в teacher menu."
     else:
-        reply_markup = main_menu_keyboard()
+        context.user_data.pop("admin_teacher_view", None)
+        context.user_data.pop("impersonated_user_id", None)
+        reply_markup = main_menu_keyboard(include_admin=role is Role.ADMIN)
         message = f"Привет, {user['display_name']}! Выберите действие в меню."
     await update.effective_message.reply_text(message, reply_markup=reply_markup)

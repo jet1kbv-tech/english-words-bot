@@ -20,7 +20,10 @@ def _resolver(context: ContextTypes.DEFAULT_TYPE) -> RoleResolver:
 
 def is_teacher(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
-    return user is not None and _resolver(context).role_for(user.username) is Role.TEACHER
+    if user is None:
+        return False
+    role = _resolver(context).role_for(user.username)
+    return role is Role.TEACHER or (role is Role.ADMIN and bool(context.user_data.get("admin_teacher_view")))
 
 
 def _student_users(context: ContextTypes.DEFAULT_TYPE) -> list:
@@ -28,9 +31,9 @@ def _student_users(context: ContextTypes.DEFAULT_TYPE) -> list:
     return db.list_student_users(_resolver(context).student_usernames)
 
 
-def _student_keyboard(students: list) -> ReplyKeyboardMarkup:
+def _student_keyboard(students: list, back_label: str = "↩️ Teacher menu") -> ReplyKeyboardMarkup:
     rows = [[KeyboardButton(f"{student['display_name']} (@{student['username']})")] for student in students]
-    rows.append([KeyboardButton("↩️ Teacher menu")])
+    rows.append([KeyboardButton(back_label)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
 
