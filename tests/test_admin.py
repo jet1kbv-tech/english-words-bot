@@ -25,7 +25,8 @@ class AdminKeyboardTests(unittest.TestCase):
         texts = self._texts(main_menu_keyboard(include_admin=True))
 
         self.assertIn(ADMIN_MENU, texts)
-        self.assertIn("🎯 Мои карточки", texts)
+        self.assertIn("📚 Мои уроки", texts)
+        self.assertNotIn("🎯 Мои карточки", texts)
 
     def test_admin_menu_contains_minimal_admin_actions(self) -> None:
         texts = self._texts(admin_menu_keyboard())

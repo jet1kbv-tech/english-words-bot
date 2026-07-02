@@ -7,6 +7,7 @@ from app.handlers.training import correct_last_negative_text_answer, correct_las
 from app.handlers.words import show_dictionary
 from app.handlers.admin import handle_admin_message
 from app.handlers.teacher import handle_teacher_message
+from app.handlers.student_lessons import handle_student_lesson_message
 from app.keyboards import DONT_KNOW, FORGET, GAME_SESSION, I_WAS_RIGHT, MY_MISTAKES, KNOW, MISTAKE, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard
 
 
@@ -17,6 +18,8 @@ async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if await handle_admin_message(update, context):
         return
     if await handle_teacher_message(update, context):
+        return
+    if await handle_student_lesson_message(update, context):
         return
     if text == MY_WORDS:
         await show_dictionary(update, context)

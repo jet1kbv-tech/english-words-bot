@@ -45,3 +45,9 @@ class LessonRepository:
 
     def list_lesson_assignment_history(self, lesson_id: int) -> list[sqlite3.Row]:
         return self.db.list_lesson_assignment_history(lesson_id)
+
+    def list_student_lessons(self, student_username: str) -> list[sqlite3.Row]:
+        return self.db.list_student_lessons(student_username)
+
+    def get_student_lesson(self, lesson_id: int, student_username: str) -> sqlite3.Row | None:
+        return self.db.get_student_lesson(lesson_id, student_username)

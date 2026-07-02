@@ -469,6 +469,45 @@ class Database:
 
 
 
+
+    def list_student_lessons(self, student_username: str) -> list[sqlite3.Row]:
+        normalized = self.normalize_username(student_username)
+        if not normalized:
+            return []
+        return self.fetchall(
+            """
+            SELECT lessons.*, lesson_students.assigned_at AS assigned_at
+            FROM lesson_students
+            JOIN lessons ON lessons.id = lesson_students.lesson_id
+            WHERE lesson_students.student_username = ?
+              AND lesson_students.is_active = 1
+            ORDER BY lesson_students.assigned_at DESC, lessons.lesson_number ASC, lessons.id ASC
+            """,
+            (normalized,),
+        )
+
+    def get_student_lesson(self, lesson_id: int, student_username: str) -> sqlite3.Row | None:
+        normalized = self.normalize_username(student_username)
+        if not normalized:
+            return None
+        return self.fetchone(
+            """
+            SELECT lessons.*, lesson_students.assigned_at AS assigned_at,
+                   (SELECT COUNT(*) FROM lesson_words WHERE lesson_id = lessons.id) AS words_count,
+                   (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_tasks_count,
+                   (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_count,
+                   0 AS grammar_count,
+                   0 AS exercises_count
+            FROM lesson_students
+            JOIN lessons ON lessons.id = lesson_students.lesson_id
+            WHERE lessons.id = ?
+              AND lesson_students.student_username = ?
+              AND lesson_students.is_active = 1
+            LIMIT 1
+            """,
+            (lesson_id, normalized),
+        )
+
     def get_active_lesson_assignment(self, lesson_id: int) -> sqlite3.Row | None:
         return self.fetchone(
             "SELECT * FROM lesson_students WHERE lesson_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1",
