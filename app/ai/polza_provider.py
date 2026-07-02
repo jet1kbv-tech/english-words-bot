@@ -72,3 +72,22 @@ class PolzaAIProvider:
         if not isinstance(feedback, str):
             feedback = ""
         return AICheckResult(is_correct=is_correct, feedback=feedback.strip()[:200])
+
+    async def generate_word_translations(self, *, words: list[str]) -> str | None:
+        if not self.available or not words:
+            return None
+
+        from app.ai.word_translation_prompt import SYSTEM_PROMPT, build_word_translation_user_prompt
+
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": build_word_translation_user_prompt(words)},
+                ],
+                temperature=0,
+            )
+        except Exception:
+            return None
+        return response.choices[0].message.content if response.choices else None
