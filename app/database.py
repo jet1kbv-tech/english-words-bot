@@ -223,14 +223,19 @@ class Database:
             (student_user_id,),
         )
 
-    def list_lessons_for_teacher(self, teacher_user_id: int) -> list[sqlite3.Row]:
+    def list_lessons_for_teacher(self, teacher_user_id: int, limit: int | None = None) -> list[sqlite3.Row]:
+        limit_sql = "" if limit is None else "LIMIT ?"
+        params: tuple[Any, ...] = (teacher_user_id,) if limit is None else (teacher_user_id, limit)
         return self.fetchall(
-            """
-            SELECT * FROM lessons
+            f"""
+            SELECT lessons.*, users.display_name AS student_display_name, users.username AS student_username
+            FROM lessons
+            JOIN users ON users.id = lessons.student_user_id
             WHERE teacher_user_id = ?
-            ORDER BY created_at DESC, id DESC
+            ORDER BY created_at DESC, lessons.id DESC
+            {limit_sql}
             """,
-            (teacher_user_id,),
+            params,
         )
 
     def add_word_to_lesson(self, lesson_id: int, word_id: int) -> bool:

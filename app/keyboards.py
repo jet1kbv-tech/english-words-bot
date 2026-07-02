@@ -21,6 +21,9 @@ I_WAS_RIGHT = "😬 Я был прав"
 TEACHER_STUDENTS = "👤 Ученики"
 TEACHER_PROGRESS = "📊 Прогресс ученика"
 TEACHER_IMPERSONATE = "👀 Режим ученика"
+TEACHER_LESSONS = "📚 Уроки"
+TEACHER_CREATE_LESSON = "➕ Создать урок"
+TEACHER_MY_LESSONS = "📋 Мои уроки"
 EXIT_STUDENT_MODE = "↩️ Выйти из режима ученика"
 ADMIN_MENU = "🛠 Админ"
 ADMIN_STUDENT_VIEW = "👨‍🎓 Войти как ученик"
@@ -65,6 +68,18 @@ def teacher_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(TEACHER_STUDENTS)],
             [KeyboardButton(TEACHER_PROGRESS)],
             [KeyboardButton(TEACHER_IMPERSONATE)],
+            [KeyboardButton(TEACHER_LESSONS)],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def teacher_lessons_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton(TEACHER_CREATE_LESSON)],
+            [KeyboardButton(TEACHER_MY_LESSONS)],
+            [KeyboardButton("↩️ Teacher menu")],
         ],
         resize_keyboard=True,
     )
