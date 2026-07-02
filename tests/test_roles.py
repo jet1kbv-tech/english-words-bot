@@ -3,7 +3,7 @@ import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
 from app.lesson_metadata import lesson_display_name
-from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_SELECT_PREFIX, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX, TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX, TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX, TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.lesson_service import normalize_lesson_words_import
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
@@ -428,6 +428,72 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(update.callback_query.message.replies, [])
         self.assertIsNone(self.context.user_data.get("pending_lesson_words"))
+
+
+    async def test_words_screen_select_button_only_with_words(self) -> None:
+        empty_lesson = self.db.create_teacher_lesson("Lesson 23 — Empty", self.teacher["id"])
+        empty_update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}{empty_lesson['id']}")
+        await handle_teacher_lesson_callback(empty_update, self.context)
+        empty_buttons = [button.text for row in empty_update.callback_query.edits[-1][1].inline_keyboard for button in row]
+        self.assertNotIn("☑️ Выбрать", empty_buttons)
+
+        lesson = self.db.create_teacher_lesson("Lesson 24 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(update, self.context)
+        buttons = [button.text for row in update.callback_query.edits[-1][1].inline_keyboard for button in row]
+        self.assertIn("☑️ Выбрать", buttons)
+
+    async def test_teacher_can_select_toggle_clear_all_and_done_lesson_words(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 25 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt", "worth it", "stale"], self.teacher["id"])
+        words = self.db.list_lesson_words(lesson["id"])
+
+        select_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(select_update, self.context)
+        self.assertIn("📖 Words — выбор", select_update.callback_query.edits[-1][0])
+        self.assertIn("Выбрано: 0 из 3", select_update.callback_query.edits[-1][0])
+        self.assertIn("☐ receipt", select_update.callback_query.edits[-1][0])
+
+        toggle_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX}{lesson['id']}:{words[0]['word_id']}")
+        await handle_teacher_lesson_callback(toggle_update, self.context)
+        self.assertIn("Выбрано: 1 из 3", toggle_update.callback_query.edits[-1][0])
+        self.assertIn("☑ receipt", toggle_update.callback_query.edits[-1][0])
+
+        untoggle_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX}{lesson['id']}:{words[0]['word_id']}")
+        await handle_teacher_lesson_callback(untoggle_update, self.context)
+        self.assertIn("Выбрано: 0 из 3", untoggle_update.callback_query.edits[-1][0])
+        self.assertIn("☐ receipt", untoggle_update.callback_query.edits[-1][0])
+
+        all_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(all_update, self.context)
+        self.assertIn("Выбрано: 3 из 3", all_update.callback_query.edits[-1][0])
+
+        clear_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(clear_update, self.context)
+        self.assertIn("Выбрано: 0 из 3", clear_update.callback_query.edits[-1][0])
+
+        self.context.user_data["selected_lesson_words"] = {lesson["id"]: {words[0]["word_id"]}}
+        done_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(done_update, self.context)
+        self.assertIn("📖 Words", done_update.callback_query.edits[-1][0])
+        self.assertNotIn("— выбор", done_update.callback_query.edits[-1][0])
+        self.assertNotIn(lesson["id"], self.context.user_data.get("selected_lesson_words", {}))
+
+    async def test_selection_ignores_missing_word_and_student_cannot_access(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 26 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        self.context.user_data["selected_lesson_words"] = {lesson["id"]: {999}}
+
+        update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(update, self.context)
+        self.assertIn("Выбрано: 0 из 1", update.callback_query.edits[-1][0])
+        self.assertEqual(self.context.user_data["selected_lesson_words"][lesson["id"]], set())
+
+        student_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_PREFIX}{lesson['id']}", username="privetnormalno", user_id=103)
+        await handle_teacher_lesson_callback(student_update, self.context)
+        self.assertEqual(student_update.callback_query.edits, [])
+        self.assertEqual(student_update.callback_query.message.replies, [])
 
     async def test_teacher_can_add_student(self) -> None:
         first = self._update(ADD_STUDENT)

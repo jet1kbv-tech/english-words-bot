@@ -25,6 +25,7 @@ _IMPORT_LESSON_WORDS = "teacher_import_lesson_words"
 _EDIT_LESSON_WORD = "teacher_edit_lesson_word"
 _PENDING_WORD_EDIT = "pending_lesson_word_edit"
 _PENDING_LESSON_WORDS = "pending_lesson_words"
+_SELECTED_LESSON_WORDS = "selected_lesson_words"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
 LESSON_BACK_TO_LIST = "⬅️ К списку lessons"
@@ -37,6 +38,11 @@ TEACHER_LESSON_HOMEWORK_PREFIX = "teacher:lesson:homework:"
 TEACHER_LESSON_AI_PREFIX = "teacher:lesson:ai:"
 TEACHER_LESSON_BACK_PREFIX = "teacher:lesson:back:"
 TEACHER_LESSON_WORDS_ADD_PREFIX = "teacher:lesson:words:add:"
+TEACHER_LESSON_WORDS_SELECT_PREFIX = "teacher:lesson:words:select:"
+TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX = "teacher:lesson:words:select:toggle:"
+TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX = "teacher:lesson:words:select:all:"
+TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX = "teacher:lesson:words:select:clear:"
+TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX = "teacher:lesson:words:select:done:"
 TEACHER_LESSON_WORD_OPEN_PREFIX = "teacher:lesson:word:open:"
 TEACHER_LESSON_WORDS_CONFIRM_PREFIX = "teacher:lesson:words:confirm:"
 TEACHER_LESSON_WORDS_CANCEL_PREFIX = "teacher:lesson:words:cancel:"
@@ -134,9 +140,58 @@ def _lesson_words_keyboard(lesson_id: int, words: list | None = None) -> InlineK
         [InlineKeyboardButton(str(word["text"]), callback_data=f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{lesson_id}:{word['word_id']}")]
         for word in (words or [])[:20]
     ]
+    if words:
+        rows.append([InlineKeyboardButton("☑️ Выбрать", callback_data=f"{TEACHER_LESSON_WORDS_SELECT_PREFIX}{lesson_id}")])
     rows.extend([
         [InlineKeyboardButton("➕ Добавить слова", callback_data=f"{TEACHER_LESSON_WORDS_ADD_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("⬅️ Lesson", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")],
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _selected_lesson_words(context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> set[int]:
+    selections = context.user_data.setdefault(_SELECTED_LESSON_WORDS, {})
+    selected = selections.setdefault(lesson_id, set())
+    if not isinstance(selected, set):
+        selected = set(selected)
+        selections[lesson_id] = selected
+    return selected
+
+
+def _actual_word_ids(words: list) -> set[int]:
+    return {int(word["word_id"]) for word in words}
+
+
+def _prune_lesson_words_selection(context: ContextTypes.DEFAULT_TYPE, lesson_id: int, words: list) -> set[int]:
+    selected = _selected_lesson_words(context, lesson_id)
+    selected.intersection_update(_actual_word_ids(words))
+    return selected
+
+
+def _format_lesson_words_selection(words: list, selected_word_ids: set[int]) -> str:
+    if not words:
+        return "📖 Words — выбор\n\nВ этом уроке пока нет слов."
+    lines = ["📖 Words — выбор", "", f"Выбрано: {len(selected_word_ids)} из {len(words)}", ""]
+    for word in words:
+        mark = "☑" if int(word["word_id"]) in selected_word_ids else "☐"
+        lines.append(f"{mark} {word['text']}")
+    return "\n".join(lines)
+
+
+def _lesson_words_selection_keyboard(lesson_id: int, words: list, selected_word_ids: set[int]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{'☑' if int(word['word_id']) in selected_word_ids else '☐'} {word['text']}",
+                callback_data=f"{TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX}{lesson_id}:{word['word_id']}",
+            )
+        ]
+        for word in words[:20]
+    ]
+    rows.extend([
+        [InlineKeyboardButton("✅ Выбрать все", callback_data=f"{TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("🧹 Очистить", callback_data=f"{TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("⬅️ Готово", callback_data=f"{TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX}{lesson_id}")],
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -221,6 +276,16 @@ async def _show_lesson_words(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await update.effective_message.reply_text(text, reply_markup=markup)
 
 
+async def _show_lesson_words_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> None:
+    db: Database = context.application.bot_data["db"]
+    words = _lesson_service(db).list_lesson_words(lesson_id)
+    selected_word_ids = _prune_lesson_words_selection(context, lesson_id, words)
+    text = _format_lesson_words_selection(words, selected_word_ids)
+    markup = _lesson_words_selection_keyboard(lesson_id, words, selected_word_ids)
+    if update.callback_query is not None:
+        await update.callback_query.edit_message_text(text, reply_markup=markup)
+
+
 def _format_lesson_section(summary, section: str) -> str:
     descriptions = {
         "words": ("📖 Words", "Этот раздел скоро позволит добавлять и редактировать слова урока."),
@@ -282,6 +347,14 @@ def _lesson_word_ids_from_callback(data: str) -> tuple[int, int] | None:
     return int(lesson_id_text), int(word_id_text)
 
 
+def _lesson_words_selection_ids_from_callback(data: str, prefix: str) -> tuple[int, int] | None:
+    ids_text = data.removeprefix(prefix).strip()
+    lesson_id_text, separator, word_id_text = ids_text.partition(":")
+    if separator != ":" or not lesson_id_text.isdigit() or not word_id_text.isdigit():
+        return None
+    return int(lesson_id_text), int(word_id_text)
+
+
 async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     if query is None:
@@ -323,6 +396,57 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         word = service.get_lesson_word(lesson_id, word_id) if summary is not None else None
         context.user_data["current_teacher_lesson_id"] = lesson_id
         await query.edit_message_text(_format_lesson_word_detail(summary, word), reply_markup=_lesson_word_detail_keyboard(lesson_id, word_id))
+        return
+    if data.startswith(TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX):
+        ids = _lesson_words_selection_ids_from_callback(data, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX)
+        if ids is None:
+            return
+        lesson_id, word_id = ids
+        if service.get_lesson_summary(lesson_id) is None:
+            if query.message is not None:
+                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+            return
+        words = service.list_lesson_words(lesson_id)
+        actual_ids = _actual_word_ids(words)
+        selected = _prune_lesson_words_selection(context, lesson_id, words)
+        if word_id in actual_ids:
+            if word_id in selected:
+                selected.remove(word_id)
+            else:
+                selected.add(word_id)
+        context.user_data["current_teacher_lesson_id"] = lesson_id
+        await _show_lesson_words_selection(update, context, lesson_id)
+        return
+    for select_prefix in (
+        TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX,
+        TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX,
+        TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX,
+        TEACHER_LESSON_WORDS_SELECT_PREFIX,
+    ):
+        if not data.startswith(select_prefix):
+            continue
+        lesson_id = _lesson_id_from_callback(data, select_prefix)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            if query.message is not None:
+                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+            return
+        context.user_data["current_teacher_lesson_id"] = lesson_id
+        if select_prefix == TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX:
+            selections = context.user_data.get(_SELECTED_LESSON_WORDS, {})
+            selections.pop(lesson_id, None)
+            await _show_lesson_words(update, context, lesson_id, edit=True)
+            return
+        words = service.list_lesson_words(lesson_id)
+        selected = _prune_lesson_words_selection(context, lesson_id, words)
+        if not words and select_prefix == TEACHER_LESSON_WORDS_SELECT_PREFIX:
+            await query.edit_message_text("В этом уроке пока нет слов.", reply_markup=_lesson_words_keyboard(lesson_id, words))
+            return
+        if select_prefix == TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX:
+            selected.clear()
+            selected.update(_actual_word_ids(words))
+        elif select_prefix == TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX:
+            selected.clear()
+        await _show_lesson_words_selection(update, context, lesson_id)
         return
     for words_prefix in (TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX):
         if not data.startswith(words_prefix):
