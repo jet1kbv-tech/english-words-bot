@@ -192,6 +192,55 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertEqual(lesson["teacher_user_id"], self.teacher["id"])
         self.assertIsNone(lesson["student_user_id"])
         self.assertEqual(lesson["status"], "DRAFT")
+        self.assertEqual(lesson["lesson_number"], 15)
+        self.assertEqual(lesson["topic"], "Food")
+        self.assertIsNone(lesson["description"])
+        self.assertIsNone(lesson["level"])
+
+    def test_lesson_metadata_columns_are_idempotently_added(self) -> None:
+        self.db.execute("ALTER TABLE lessons RENAME TO lessons_new")
+        self.db.execute("""
+            CREATE TABLE lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                teacher_user_id INTEGER,
+                student_user_id INTEGER,
+                title TEXT NOT NULL,
+                theme TEXT,
+                grammar_topic TEXT,
+                status TEXT NOT NULL DEFAULT 'DRAFT',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self.db.execute("""
+            INSERT INTO lessons (teacher_user_id, student_user_id, title, status, created_at, updated_at)
+            VALUES (?, NULL, 'Legacy', 'draft', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+        """, (self.teacher["id"],))
+        self.db.execute("DROP TABLE lessons_new")
+
+        self.db.init_schema()
+        self.db.init_schema()
+
+        columns = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lessons)")}
+        self.assertIn("lesson_number", columns)
+        self.assertIn("topic", columns)
+        self.assertIn("description", columns)
+        self.assertIn("level", columns)
+        legacy = self.db.list_lessons()[0]
+        self.assertEqual(legacy["title"], "Legacy")
+        self.assertEqual(legacy["status"], "DRAFT")
+        self.assertIsNone(legacy["topic"])
+
+    def test_teacher_lesson_metadata_parser_variants(self) -> None:
+        travel = self.db.create_teacher_lesson("15 - Travel", self.teacher["id"])
+        food = self.db.create_teacher_lesson("Food", self.teacher["id"])
+
+        self.assertEqual(travel["title"], "15 - Travel")
+        self.assertEqual(travel["lesson_number"], 15)
+        self.assertEqual(travel["topic"], "Travel")
+        self.assertEqual(food["title"], "Food")
+        self.assertIsNone(food["lesson_number"])
+        self.assertEqual(food["topic"], "Food")
 
     def test_list_lessons_returns_created_lessons(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 16 — Travel", self.teacher["id"])

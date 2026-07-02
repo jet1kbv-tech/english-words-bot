@@ -93,8 +93,9 @@
 Teacher menu содержит кнопку `📚 Lessons`. Внутри раздела доступны:
 
 - список lessons с пустым состоянием, кнопками открытия `Lesson <id>`, `➕ Создать lesson` и `⬅️ Назад`;
-- `➕ Создать lesson` — teacher вводит только название урока, после чего создаётся draft lesson и сразу показывается detail screen;
-- lesson detail организован как секции `Words`, `Grammar`, `Exercises`, `Homework`, `AI Assistant`; экран показывает title, status, counts для words/homework и placeholder counts `0` для grammar/exercises.
+- `➕ Создать lesson` — teacher вводит название урока, после чего создаётся draft lesson и сразу показывается detail screen;
+- при создании сохраняется backward-compatible `title`, а lightweight parser пытается заполнить metadata `lesson_number` и `topic` из форматов вроде `Lesson 15 — Food`, `Lesson 15 - Food`, `15 — Food`, `15 - Food` или `Food`;
+- lesson detail организован как секции `Words`, `Grammar`, `Exercises`, `Homework`, `AI Assistant`; экран показывает display name, status, metadata `topic`/`level`/`description`, counts для words/homework и placeholder counts `0` для grammar/exercises.
 
 Этот UI не добавляет слова в урок, не публикует уроки, не создаёт домашние задания ученику, не вызывает AI-генерацию и не меняет game flow.
 
@@ -421,12 +422,18 @@ Teacher Lesson UI currently supports listing and creating draft lessons. Teacher
 | `id` | INTEGER PK AUTOINCREMENT | lesson id |
 | `teacher_user_id` | INTEGER | optional teacher user id |
 | `student_user_id` | INTEGER | optional student user id; nullable for teacher-created lesson skeleton drafts |
-| `title` | TEXT NOT NULL | название урока |
+| `title` | TEXT NOT NULL | backward-compatible original teacher input |
+| `lesson_number` | INTEGER NULL | optional lesson number parsed from teacher input |
+| `topic` | TEXT NULL | optional topic parsed from teacher input or set to full input when number is absent |
+| `description` | TEXT NULL | optional lesson description metadata |
+| `level` | TEXT NULL | optional lesson level metadata |
 | `theme` | TEXT | optional lexical/theme focus |
 | `grammar_topic` | TEXT | optional grammar focus |
 | `status` | TEXT NOT NULL DEFAULT `DRAFT` | lifecycle status |
 | `created_at` | TEXT NOT NULL | UTC ISO string |
 | `updated_at` | TEXT NOT NULL | UTC ISO string |
+
+Lesson keeps backward-compatible `title`, but now also has metadata fields: `lesson_number`, `topic`, `description`, `level`. Display name is derived from metadata when possible: `Lesson {lesson_number} — {topic}`, or `topic`, or fallback `title`.
 
 ### 8.6.2 `lesson_words`
 

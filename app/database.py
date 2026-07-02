@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.lesson_metadata import parse_lesson_title
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
@@ -106,6 +108,10 @@ class Database:
                 teacher_user_id INTEGER,
                 student_user_id INTEGER,
                 title TEXT NOT NULL,
+                lesson_number INTEGER,
+                topic TEXT,
+                description TEXT,
+                level TEXT,
                 theme TEXT,
                 grammar_topic TEXT,
                 status TEXT NOT NULL DEFAULT 'DRAFT',
@@ -169,14 +175,18 @@ class Database:
                     teacher_user_id INTEGER,
                     student_user_id INTEGER,
                     title TEXT NOT NULL,
+                    lesson_number INTEGER,
+                    topic TEXT,
+                    description TEXT,
+                    level TEXT,
                     theme TEXT,
                     grammar_topic TEXT,
                     status TEXT NOT NULL DEFAULT 'DRAFT',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-                INSERT INTO lessons (id, teacher_user_id, student_user_id, title, theme, grammar_topic, status, created_at, updated_at)
-                SELECT id, teacher_user_id, student_user_id, title, theme, grammar_topic, upper(status), created_at, updated_at
+                INSERT INTO lessons (id, teacher_user_id, student_user_id, title, lesson_number, topic, description, level, theme, grammar_topic, status, created_at, updated_at)
+                SELECT id, teacher_user_id, student_user_id, title, NULL, NULL, NULL, NULL, theme, grammar_topic, upper(status), created_at, updated_at
                 FROM lessons_old;
                 DROP TABLE lessons_old;
                 PRAGMA foreign_keys = ON;
@@ -184,6 +194,15 @@ class Database:
             )
             self._connection.commit()
         else:
+            metadata_columns = {
+                "lesson_number": "INTEGER NULL",
+                "topic": "TEXT NULL",
+                "description": "TEXT NULL",
+                "level": "TEXT NULL",
+            }
+            for column_name, column_type in metadata_columns.items():
+                if column_name not in columns:
+                    self.execute(f"ALTER TABLE lessons ADD COLUMN {column_name} {column_type}")
             self.execute("UPDATE lessons SET status = upper(status) WHERE status != upper(status)")
 
     def execute(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
@@ -317,12 +336,15 @@ class Database:
 
     def create_teacher_lesson(self, title: str, teacher_user_id: int | None = None) -> sqlite3.Row:
         now = utc_now()
+        title = title.strip()
+        lesson_number, topic = parse_lesson_title(title)
         cursor = self.execute(
             """
-            INSERT INTO lessons (teacher_user_id, student_user_id, title, status, created_at, updated_at)
-            VALUES (?, NULL, ?, 'DRAFT', ?, ?)
+            INSERT INTO lessons (
+                teacher_user_id, student_user_id, title, lesson_number, topic, description, level, status, created_at, updated_at
+            ) VALUES (?, NULL, ?, ?, ?, NULL, NULL, 'DRAFT', ?, ?)
             """,
-            (teacher_user_id, title.strip(), now, now),
+            (teacher_user_id, title, lesson_number, topic, now, now),
         )
         lesson = self.get_lesson(int(cursor.lastrowid))
         if lesson is None:

@@ -2,7 +2,8 @@ from dataclasses import dataclass
 import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
-from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
+from app.lesson_metadata import lesson_display_name
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
 
@@ -55,16 +56,48 @@ class TeacherLessonUiTests(unittest.TestCase):
         self.assertIn("Пока нет уроков.", _format_lessons_screen([]))
 
     def test_lesson_detail_formatter_shows_counts(self) -> None:
-        summary = {"title": "Lesson 15 — Food", "status": "DRAFT", "words_count": 2, "grammar_count": 0, "exercises_count": 0, "homework_count": 1}
+        summary = {
+            "title": "Lesson 15 — Food",
+            "lesson_number": 15,
+            "topic": "Food",
+            "description": None,
+            "level": None,
+            "status": "DRAFT",
+            "words_count": 2,
+            "grammar_count": 0,
+            "exercises_count": 0,
+            "homework_count": 1,
+        }
 
         formatted = _format_lesson_detail(summary)
 
-        self.assertIn("Title: Lesson 15 — Food", formatted)
+        self.assertIn("Lesson: Lesson 15 — Food", formatted)
+        self.assertIn("Topic: Food", formatted)
+        self.assertIn("Level: —", formatted)
+        self.assertIn("Description: —", formatted)
         self.assertIn("Status: Draft", formatted)
         self.assertIn("📖 Words: 2", formatted)
         self.assertIn("📝 Grammar: 0", formatted)
         self.assertIn("✏️ Exercises: 0", formatted)
         self.assertIn("🏠 Homework: 1", formatted)
+
+    def test_lesson_display_name_and_list_use_metadata(self) -> None:
+        self.assertEqual(lesson_display_name({"title": "Raw", "lesson_number": 15, "topic": "Food"}), "Lesson 15 — Food")
+        self.assertEqual(lesson_display_name({"title": "Raw", "lesson_number": None, "topic": "Travel"}), "Travel")
+        self.assertEqual(lesson_display_name({"title": "Legacy", "lesson_number": None, "topic": None}), "Legacy")
+
+        formatted = _format_lessons_screen([
+            {"id": 1, "title": "Lesson 15 — Food", "lesson_number": 15, "topic": "Food", "status": "DRAFT"},
+            {"id": 2, "title": "Legacy", "lesson_number": None, "topic": None, "status": "DRAFT"},
+        ])
+
+        self.assertIn("1. Lesson 15 — Food — Draft", formatted)
+        self.assertIn("2. Legacy — Draft", formatted)
+
+    def test_lesson_section_uses_display_name(self) -> None:
+        formatted = _format_lesson_section({"title": "Raw", "lesson_number": 15, "topic": "Food"}, "words")
+
+        self.assertIn("Lesson: Lesson 15 — Food", formatted)
 
     def test_lesson_formatters_show_requested_fields(self) -> None:
         lesson = {"title": "Past Simple", "theme": None, "grammar_topic": "Past Simple", "status": "DRAFT"}
