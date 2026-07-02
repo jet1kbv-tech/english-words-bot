@@ -9,14 +9,17 @@ from app.handlers.start import require_user
 from app.keyboards import MY_LESSONS, main_menu_keyboard
 from app.lesson_metadata import lesson_display_name
 from app.lesson_repository import LessonRepository
+from app.lesson_runtime import LessonRuntimeService, LessonSection
 
 STUDENT_LESSONS_LIST_CALLBACK = "student:lessons:list"
 STUDENT_LESSON_OPEN_PREFIX = "student:lesson:open:"
 STUDENT_LESSON_START_PREFIX = "student:lesson:start:"
+STUDENT_LESSON_WORDS_PREFIX = "student:lesson:words:"
 STUDENT_LESSON_CALLBACK_PREFIXES = (
     STUDENT_LESSONS_LIST_CALLBACK,
     STUDENT_LESSON_OPEN_PREFIX,
     STUDENT_LESSON_START_PREFIX,
+    STUDENT_LESSON_WORDS_PREFIX,
 )
 
 
@@ -53,6 +56,13 @@ def _format_student_lesson_overview(summary) -> str:
         "",
         "Не начат",
         "",
+        "Прогресс урока",
+        "",
+        "🟢 Words",
+        "⚪ Grammar",
+        "⚪ Exercises",
+        "⚪ Homework",
+        "",
         f"Words: {_count(summary, 'words_count')}",
         f"Grammar: {_count(summary, 'grammar_count')}",
         f"Exercises: {_count(summary, 'exercises_count')}",
@@ -71,8 +81,34 @@ def _lesson_unavailable_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои уроки", callback_data=STUDENT_LESSONS_LIST_CALLBACK)]])
 
 
-def _start_placeholder_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+def _start_section_keyboard(lesson_id: int, section: LessonSection) -> InlineKeyboardMarkup:
+    open_callback = f"{STUDENT_LESSON_WORDS_PREFIX}{lesson_id}" if section is LessonSection.WORDS else f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶ Открыть", callback_data=open_callback)],
+        [InlineKeyboardButton("⬅️ Lesson", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
+    ])
+
+
+def _lesson_back_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Lesson", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")]])
+
+
+def _format_next_section(summary, section: LessonSection) -> str:
+    if section is LessonSection.WORDS:
+        return "\n".join(["Следующий этап", "", "📖 Words", "", f"{_count(summary, 'words_count')} слова"])
+    return "Следующий этап будет добавлен позже."
+
+
+def _format_words_stage(summary) -> str:
+    return "\n".join([
+        "📖 Words",
+        "",
+        "В этом уроке:",
+        "",
+        f"{_count(summary, 'words_count')} слова",
+        "",
+        "Прохождение слов будет добавлено в следующем обновлении.",
+    ])
 
 
 def _is_student_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -138,7 +174,21 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
     if data.startswith(STUDENT_LESSON_START_PREFIX):
         lesson_id_text = data.removeprefix(STUDENT_LESSON_START_PREFIX)
         lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
-        if lesson_id <= 0 or repo.get_student_lesson(lesson_id, user["username"]) is None:
+        summary = repo.get_student_lesson(lesson_id, user["username"]) if lesson_id > 0 else None
+        if summary is None:
             await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
             return
-        await query.edit_message_text("Начало прохождения урока будет добавлено в следующем обновлении.", reply_markup=_start_placeholder_keyboard(lesson_id))
+        section = LessonRuntimeService(repo).get_next_section(lesson_id, user["username"])
+        if section is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        await query.edit_message_text(_format_next_section(summary, section), reply_markup=_start_section_keyboard(lesson_id, section))
+        return
+    if data.startswith(STUDENT_LESSON_WORDS_PREFIX):
+        lesson_id_text = data.removeprefix(STUDENT_LESSON_WORDS_PREFIX)
+        lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
+        summary = repo.get_student_lesson(lesson_id, user["username"]) if lesson_id > 0 else None
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        await query.edit_message_text(_format_words_stage(summary), reply_markup=_lesson_back_keyboard(lesson_id))

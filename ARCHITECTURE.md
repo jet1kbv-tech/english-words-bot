@@ -600,3 +600,11 @@ Only one active assignment per lesson is supported now, enforced by a partial un
 Student interacts with the platform primarily through assigned Lessons.
 
 Legacy dictionary functionality remains available internally but is no longer the primary navigation flow for students.
+
+### 3.8 Lesson Runtime Framework
+
+Lesson Runtime determines the next section independently of Telegram handlers.
+
+Future lesson flow is driven by Runtime rather than hardcoded navigation.
+
+`app/lesson_runtime.py` owns the section enum and `LessonRuntimeService.get_next_section(lesson_id, student_username)`. The student Lesson Overview handler asks this service for the next stage when a student presses `▶ Начать урок`; handlers only render the returned stage and protect access through the existing lesson assignment lookup. The initial runtime always returns `WORDS` for an assigned student and leaves `GRAMMAR`, `EXERCISES`, `HOMEWORK`, and `FINISHED` as future runtime states without adding new database tables.

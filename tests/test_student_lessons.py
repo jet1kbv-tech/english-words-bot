@@ -8,12 +8,14 @@ from app.database import Database
 from app.handlers.student_lessons import (
     STUDENT_LESSON_OPEN_PREFIX,
     STUDENT_LESSON_START_PREFIX,
+    STUDENT_LESSON_WORDS_PREFIX,
     handle_student_lesson_callback,
     handle_student_lesson_message,
 )
 from app.handlers.teacher import _format_lessons_screen
 from app.keyboards import MY_LESSONS, TEACHER_LESSONS, main_menu_keyboard, teacher_menu_keyboard
 from app.lesson_repository import LessonRepository
+from app.lesson_runtime import LessonRuntimeService, LessonSection
 
 
 @dataclass(frozen=True)
@@ -89,7 +91,7 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(text.index("Lesson 15"), text.index("Lesson 17"))
         self.assertLess(text.index("Lesson 17"), text.index("Lesson 16"))
 
-    async def test_lesson_overview_and_start_placeholder(self):
+    async def test_lesson_overview_progress_start_and_words_placeholder(self):
         lesson = self._lesson("Lesson 15 — Food")
         self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
         self.db.add_lesson_words(lesson["id"], ["apple", "pear", "bread"], self.teacher["id"])
@@ -100,12 +102,38 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         text = update.callback_query.edits[-1][0]
         self.assertIn("Lesson 15 — Food", text)
         self.assertIn("Не начат", text)
+        self.assertIn("Прогресс урока", text)
+        self.assertIn("🟢 Words", text)
+        self.assertIn("⚪ Grammar", text)
+        self.assertIn("⚪ Exercises", text)
+        self.assertIn("⚪ Homework", text)
         self.assertIn("Words: 3", text)
         self.assertIn("Homework: 1", text)
 
         start = self._callback_update(f"{STUDENT_LESSON_START_PREFIX}{lesson['id']}")
         await handle_student_lesson_callback(start, self.context)
-        self.assertEqual(start.callback_query.edits[-1][0], "Начало прохождения урока будет добавлено в следующем обновлении.")
+        start_text, start_keyboard = start.callback_query.edits[-1]
+        self.assertIn("Следующий этап", start_text)
+        self.assertIn("📖 Words", start_text)
+        self.assertIn("3 слова", start_text)
+        self.assertEqual([b.text for row in start_keyboard.inline_keyboard for b in row], ["▶ Открыть", "⬅️ Lesson"])
+
+        words = self._callback_update(f"{STUDENT_LESSON_WORDS_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(words, self.context)
+        words_text = words.callback_query.edits[-1][0]
+        self.assertIn("📖 Words", words_text)
+        self.assertIn("В этом уроке:", words_text)
+        self.assertIn("3 слова", words_text)
+        self.assertIn("Прохождение слов будет добавлено в следующем обновлении.", words_text)
+
+    def test_runtime_returns_words_for_assigned_student(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+
+        runtime = LessonRuntimeService(LessonRepository(self.db))
+
+        self.assertEqual(runtime.get_next_section(lesson["id"], "student"), LessonSection.WORDS)
+        self.assertIsNone(runtime.get_next_section(lesson["id"], "other"))
 
     async def test_student_cannot_open_other_or_missing_assignment(self):
         lesson = self._lesson("Lesson 15 — Food")
@@ -113,6 +141,14 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         update = self._callback_update(f"{STUDENT_LESSON_OPEN_PREFIX}{lesson['id']}")
         await handle_student_lesson_callback(update, self.context)
         self.assertEqual(update.callback_query.edits[-1][0], "Урок недоступен.")
+
+        start = self._callback_update(f"{STUDENT_LESSON_START_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(start, self.context)
+        self.assertEqual(start.callback_query.edits[-1][0], "Урок недоступен.")
+
+        words = self._callback_update(f"{STUDENT_LESSON_WORDS_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(words, self.context)
+        self.assertEqual(words.callback_query.edits[-1][0], "Урок недоступен.")
 
         self.db.unassign_lesson(lesson["id"])
         missing = self._callback_update(f"{STUDENT_LESSON_OPEN_PREFIX}{lesson['id']}", username="other", user_id=3)
