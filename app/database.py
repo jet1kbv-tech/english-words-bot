@@ -127,6 +127,28 @@ class Database:
                 UNIQUE(lesson_id, word_id)
             );
 
+            CREATE TABLE IF NOT EXISTS lesson_students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                student_username TEXT NOT NULL,
+                assigned_by_user_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'ASSIGNED',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                unassigned_at TEXT NULL,
+                completed_at TEXT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lesson_students_lesson_id
+            ON lesson_students(lesson_id);
+
+            CREATE INDEX IF NOT EXISTS idx_lesson_students_student_username
+            ON lesson_students(student_username);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_students_one_active_per_lesson
+            ON lesson_students(lesson_id)
+            WHERE is_active = 1;
+
             CREATE TABLE IF NOT EXISTS homework_tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lesson_id INTEGER NOT NULL,
@@ -153,6 +175,7 @@ class Database:
         self._connection.commit()
         self._ensure_daily_activity_xp_column()
         self._ensure_lessons_schema()
+        self._ensure_lesson_students_schema()
 
     def _ensure_daily_activity_xp_column(self) -> None:
         columns = {row["name"] for row in self.fetchall("PRAGMA table_info(daily_activity)")}
@@ -204,6 +227,32 @@ class Database:
                 if column_name not in columns:
                     self.execute(f"ALTER TABLE lessons ADD COLUMN {column_name} {column_type}")
             self.execute("UPDATE lessons SET status = upper(status) WHERE status != upper(status)")
+
+
+    def _ensure_lesson_students_schema(self) -> None:
+        self._connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS lesson_students (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                student_username TEXT NOT NULL,
+                assigned_by_user_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'ASSIGNED',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                unassigned_at TEXT NULL,
+                completed_at TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_lesson_students_lesson_id
+            ON lesson_students(lesson_id);
+            CREATE INDEX IF NOT EXISTS idx_lesson_students_student_username
+            ON lesson_students(student_username);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_students_one_active_per_lesson
+            ON lesson_students(lesson_id)
+            WHERE is_active = 1;
+            """
+        )
+        self._connection.commit()
 
     def execute(self, query: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         cursor = self._connection.execute(query, tuple(params))
@@ -418,6 +467,55 @@ class Database:
             params,
         )
 
+
+
+    def get_active_lesson_assignment(self, lesson_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM lesson_students WHERE lesson_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1",
+            (lesson_id,),
+        )
+
+    def list_lesson_assignment_history(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM lesson_students WHERE lesson_id = ? ORDER BY id ASC",
+            (lesson_id,),
+        )
+
+    def assign_lesson_to_student(
+        self, lesson_id: int, student_username: str, assigned_by_user_id: int | None = None
+    ) -> sqlite3.Row:
+        if self.get_lesson(lesson_id) is None:
+            raise ValueError("lesson not found")
+        normalized = self.normalize_username(student_username)
+        if not normalized:
+            raise ValueError("student username must not be empty")
+        active = self.get_active_lesson_assignment(lesson_id)
+        if active is not None and active["student_username"] == normalized:
+            return active
+        now = utc_now()
+        self.execute(
+            "UPDATE lesson_students SET is_active = 0, unassigned_at = ? WHERE lesson_id = ? AND is_active = 1",
+            (now, lesson_id),
+        )
+        cursor = self.execute(
+            """
+            INSERT INTO lesson_students (lesson_id, student_username, assigned_by_user_id, status, is_active, assigned_at)
+            VALUES (?, ?, ?, 'ASSIGNED', 1, ?)
+            """,
+            (lesson_id, normalized, assigned_by_user_id, now),
+        )
+        row = self.fetchone("SELECT * FROM lesson_students WHERE id = ?", (cursor.lastrowid,))
+        if row is None:
+            raise RuntimeError("Failed to create lesson assignment")
+        return row
+
+    def unassign_lesson(self, lesson_id: int) -> None:
+        if self.get_lesson(lesson_id) is None:
+            raise ValueError("lesson not found")
+        self.execute(
+            "UPDATE lesson_students SET is_active = 0, unassigned_at = ? WHERE lesson_id = ? AND is_active = 1",
+            (utc_now(), lesson_id),
+        )
 
     def list_lesson_words(self, lesson_id: int) -> list[sqlite3.Row]:
         return self.fetchall(

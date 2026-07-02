@@ -41,6 +41,9 @@ TEACHER_LESSON_EXERCISES_PREFIX = "teacher:lesson:exercises:"
 TEACHER_LESSON_HOMEWORK_PREFIX = "teacher:lesson:homework:"
 TEACHER_LESSON_AI_PREFIX = "teacher:lesson:ai:"
 TEACHER_LESSON_BACK_PREFIX = "teacher:lesson:back:"
+TEACHER_LESSON_ASSIGN_PREFIX = "teacher:lesson:assign:"
+TEACHER_LESSON_ASSIGN_STUDENT_PREFIX = "teacher:lesson:assign_student:"
+TEACHER_LESSON_UNASSIGN_PREFIX = "teacher:lesson:unassign:"
 TEACHER_LESSON_WORDS_ADD_PREFIX = "teacher:lesson:words:add:"
 TEACHER_LESSON_WORDS_SELECT_PREFIX = "teacher:lesson:words:select:"
 TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX = "teacher:lesson:words:select:toggle:"
@@ -64,6 +67,9 @@ TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_HOMEWORK_PREFIX,
     TEACHER_LESSON_AI_PREFIX,
     TEACHER_LESSON_BACK_PREFIX,
+    TEACHER_LESSON_ASSIGN_STUDENT_PREFIX,
+    TEACHER_LESSON_ASSIGN_PREFIX,
+    TEACHER_LESSON_UNASSIGN_PREFIX,
     TEACHER_LESSON_WORDS_ADD_PREFIX,
     TEACHER_LESSON_WORDS_CONFIRM_PREFIX,
     TEACHER_LESSON_WORDS_CANCEL_PREFIX,
@@ -108,7 +114,8 @@ def _optional_summary_value(summary, key: str) -> str:
     return "—"
 
 
-def _format_lesson_detail(summary) -> str:
+def _format_lesson_detail(summary, assignment=None) -> str:
+    student = f"@{assignment['student_username']}" if assignment is not None else "—"
     return "\n".join([
         "📚 Lesson",
         "",
@@ -119,6 +126,10 @@ def _format_lesson_detail(summary) -> str:
         f"Level: {_optional_summary_value(summary, 'level')}",
         f"Description: {_optional_summary_value(summary, 'description')}",
         "",
+        "👤 Student",
+        "",
+        student,
+        "",
         f"📖 Words: {_count(summary, 'words_count')}",
         f"📝 Grammar: {_count(summary, 'grammar_count')}",
         f"✏️ Exercises: {_count(summary, 'exercises_count')}",
@@ -126,17 +137,40 @@ def _format_lesson_detail(summary) -> str:
     ])
 
 
-def _lesson_detail_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def _lesson_detail_keyboard(lesson_id: int, assignment=None) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton("📖 Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("📝 Grammar", callback_data=f"{TEACHER_LESSON_GRAMMAR_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("✏️ Exercises", callback_data=f"{TEACHER_LESSON_EXERCISES_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("🏠 Homework", callback_data=f"{TEACHER_LESSON_HOMEWORK_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("🤖 AI Assistant", callback_data=f"{TEACHER_LESSON_AI_PREFIX}{lesson_id}")],
-        [InlineKeyboardButton(LESSON_BACK_TO_LIST, callback_data=TEACHER_LESSONS_LIST_CALLBACK)],
-    ])
+        [InlineKeyboardButton("👤 Назначить ученика", callback_data=f"{TEACHER_LESSON_ASSIGN_PREFIX}{lesson_id}")],
+    ]
+    if assignment is not None:
+        rows.append([InlineKeyboardButton("❌ Снять назначение", callback_data=f"{TEACHER_LESSON_UNASSIGN_PREFIX}{lesson_id}")])
+    rows.append([InlineKeyboardButton(LESSON_BACK_TO_LIST, callback_data=TEACHER_LESSONS_LIST_CALLBACK)])
+    return InlineKeyboardMarkup(rows)
 
 
+
+
+
+def _format_assign_student_screen(summary, students: list) -> str:
+    if not students:
+        return "Нет доступных учеников."
+    return "\n".join(["Выберите ученика для lesson:", "", lesson_display_name(summary)])
+
+def _assign_student_keyboard(lesson_id: int, students: list) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(f"@{student['username']}", callback_data=f"{TEACHER_LESSON_ASSIGN_STUDENT_PREFIX}{lesson_id}:{student['username']}")] for student in students]
+    rows.append([InlineKeyboardButton("⬅️ Lesson", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")])
+    return InlineKeyboardMarkup(rows)
+
+def _assign_student_ids_from_callback(data: str) -> tuple[int, str] | None:
+    payload = data.removeprefix(TEACHER_LESSON_ASSIGN_STUDENT_PREFIX).strip()
+    lesson_id_text, sep, username = payload.partition(":")
+    if sep != ":" or not lesson_id_text.isdigit() or not username.strip():
+        return None
+    return int(lesson_id_text), username
 
 def _format_lesson_words(words: list) -> str:
     if not words:
@@ -403,7 +437,8 @@ async def _show_lesson_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.effective_message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(_lesson_service(db).list_lessons()))
         return
     context.user_data["current_teacher_lesson_id"] = lesson_id
-    await update.effective_message.reply_text(_format_lesson_detail(summary), reply_markup=_lesson_detail_keyboard(lesson_id))
+    assignment = _lesson_service(db).get_active_lesson_assignment(lesson_id)
+    await update.effective_message.reply_text(_format_lesson_detail(summary, assignment), reply_markup=_lesson_detail_keyboard(lesson_id, assignment))
 
 
 
@@ -454,6 +489,43 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         if query.message is not None:
             await query.message.reply_text(_format_lessons_screen(lessons), reply_markup=_lessons_list_keyboard(lessons))
         return
+    if data.startswith(TEACHER_LESSON_ASSIGN_STUDENT_PREFIX):
+        parsed = _assign_student_ids_from_callback(data)
+        if parsed is None:
+            return
+        lesson_id, username = parsed
+        summary = service.get_lesson_summary(lesson_id)
+        student = _student_by_label(_student_users(context), username)
+        if summary is None:
+            await query.edit_message_text("Lesson не найден.")
+            return
+        if student is None:
+            await query.edit_message_text("Ученик недоступен.", reply_markup=_assign_student_keyboard(lesson_id, _student_users(context)))
+            return
+        assignment = service.assign_lesson_to_student(lesson_id, str(student["username"]), _teacher_user_id(update, db))
+        await query.edit_message_text(_format_lesson_detail(summary, assignment), reply_markup=_lesson_detail_keyboard(lesson_id, assignment))
+        return
+
+    if data.startswith(TEACHER_LESSON_ASSIGN_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_ASSIGN_PREFIX)
+        summary = service.get_lesson_summary(lesson_id) if lesson_id is not None else None
+        if lesson_id is None or summary is None:
+            await query.edit_message_text("Lesson не найден.")
+            return
+        students = _student_users(context)
+        await query.edit_message_text(_format_assign_student_screen(summary, students), reply_markup=_assign_student_keyboard(lesson_id, students))
+        return
+
+    if data.startswith(TEACHER_LESSON_UNASSIGN_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_UNASSIGN_PREFIX)
+        summary = service.get_lesson_summary(lesson_id) if lesson_id is not None else None
+        if lesson_id is None or summary is None:
+            await query.edit_message_text("Lesson не найден.")
+            return
+        service.unassign_lesson(lesson_id)
+        await query.edit_message_text(_format_lesson_detail(summary, None), reply_markup=_lesson_detail_keyboard(lesson_id, None))
+        return
+
     if data.startswith(TEACHER_LESSON_WORDS_AI_EDIT_PREFIX):
         ids = _ai_translation_edit_ids_from_callback(data)
         if ids is None:
@@ -663,7 +735,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             return
         context.user_data["current_teacher_lesson_id"] = lesson_id
         if prefix == TEACHER_LESSON_BACK_PREFIX:
-            await query.edit_message_text(_format_lesson_detail(summary), reply_markup=_lesson_detail_keyboard(lesson_id))
+            await query.edit_message_text(_format_lesson_detail(summary, service.get_active_lesson_assignment(lesson_id)), reply_markup=_lesson_detail_keyboard(lesson_id, service.get_active_lesson_assignment(lesson_id)))
             return
         section_by_prefix = {
             TEACHER_LESSON_WORDS_PREFIX: "words",
@@ -707,6 +779,9 @@ def _student_keyboard(students: list, back_label: str = "↩️ Teacher menu") -
     rows.append([KeyboardButton(back_label)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
+
+def _is_student_target_available(context: ContextTypes.DEFAULT_TYPE, username: str) -> bool:
+    return _student_by_label(_student_users(context), username) is not None
 
 def _student_by_label(students: list, text: str):
     normalized_text = text.casefold()

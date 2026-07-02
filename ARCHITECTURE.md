@@ -588,3 +588,11 @@ python -m unittest
 
 `require_user()` разрешает impersonation для `ADMIN` и `TEACHER`, но возвращает существующего student user по `users.id`; `upsert_user()` продолжает применяться только к реальному Telegram user при входе, поэтому telegram_id admin не меняется и дубли users не создаются.
 
+
+### 8.6.5 Lesson assignments
+
+Lesson assignments are stored separately in `lesson_students`.
+
+Lessons do not store `student_id`/`student_username` directly for the new assignment framework. The assignment layer keeps the current active target outside the lesson row, so teacher-side reassignment does not mutate lesson metadata.
+
+Only one active assignment per lesson is supported now, enforced by a partial unique index on `lesson_students(lesson_id)` where `is_active = 1`, but historical inactive assignments are preserved for audit and future reporting. Assigning a different student deactivates the previous active row with `unassigned_at` and inserts a new active `ASSIGNED` row. Unassigning only deactivates the current row; it does not delete history.
