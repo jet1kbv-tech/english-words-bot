@@ -170,3 +170,80 @@ class TeacherDatabaseTests(unittest.TestCase):
         weak_words = self.db.list_weak_words(self.student["id"], limit=10)
 
         self.assertEqual(weak_words[0]["english"], "hard")
+
+
+class LessonDatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.student = self.db.upsert_user(20, "student", "Student")
+        self.teacher = self.db.upsert_user(21, "teacher", "Teacher")
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_create_lesson_creates_lesson(self) -> None:
+        lesson = self.db.create_lesson(
+            self.student["id"],
+            self.teacher["id"],
+            "Past Simple",
+            theme="Travel",
+            grammar_topic="Past Simple",
+        )
+
+        self.assertEqual(lesson["student_user_id"], self.student["id"])
+        self.assertEqual(lesson["teacher_user_id"], self.teacher["id"])
+        self.assertEqual(lesson["title"], "Past Simple")
+        self.assertEqual(lesson["theme"], "Travel")
+        self.assertEqual(lesson["grammar_topic"], "Past Simple")
+        self.assertEqual(lesson["status"], "draft")
+
+    def test_list_lessons_for_student_returns_student_lessons(self) -> None:
+        other_student = self.db.upsert_user(22, "other", "Other")
+        lesson = self.db.create_lesson(self.student["id"], self.teacher["id"], "Lesson A")
+        self.db.create_lesson(other_student["id"], self.teacher["id"], "Lesson B")
+
+        lessons = self.db.list_lessons_for_student(self.student["id"])
+
+        self.assertEqual([row["id"] for row in lessons], [lesson["id"]])
+
+    def test_list_lessons_for_teacher_returns_teacher_lessons(self) -> None:
+        other_teacher = self.db.upsert_user(23, "otherteacher", "Other Teacher")
+        lesson = self.db.create_lesson(self.student["id"], self.teacher["id"], "Lesson A")
+        self.db.create_lesson(self.student["id"], other_teacher["id"], "Lesson B")
+
+        lessons = self.db.list_lessons_for_teacher(self.teacher["id"])
+
+        self.assertEqual([row["id"] for row in lessons], [lesson["id"]])
+
+    def test_add_word_to_lesson_does_not_create_duplicate(self) -> None:
+        lesson = self.db.create_lesson(self.student["id"], self.teacher["id"], "Words")
+        self.db.add_word(self.student["id"], "journey", "путешествие", None, None)
+        word = self.db.list_words(self.student["id"])[0]
+
+        self.assertTrue(self.db.add_word_to_lesson(lesson["id"], word["id"]))
+        self.assertFalse(self.db.add_word_to_lesson(lesson["id"], word["id"]))
+
+        rows = self.db.fetchall("SELECT * FROM lesson_words WHERE lesson_id = ?", (lesson["id"],))
+        self.assertEqual(len(rows), 1)
+
+    def test_add_homework_task_creates_task(self) -> None:
+        lesson = self.db.create_lesson(self.student["id"], self.teacher["id"], "Homework")
+
+        task = self.db.add_homework_task(
+            lesson["id"],
+            "translation",
+            "Translate: journey",
+            expected_answer="путешествие",
+            metadata_json='{"source":"manual"}',
+            order_index=2,
+        )
+
+        self.assertEqual(task["lesson_id"], lesson["id"])
+        self.assertEqual(task["task_type"], "translation")
+        self.assertEqual(task["prompt"], "Translate: journey")
+        self.assertEqual(task["expected_answer"], "путешествие")
+        self.assertEqual(task["metadata_json"], '{"source":"manual"}')
+        self.assertEqual(task["order_index"], 2)

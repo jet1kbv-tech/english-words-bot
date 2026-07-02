@@ -90,6 +90,48 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 UNIQUE(user_id, activity_date)
             );
+
+            CREATE TABLE IF NOT EXISTS lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                teacher_user_id INTEGER,
+                student_user_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                theme TEXT,
+                grammar_topic TEXT,
+                status TEXT NOT NULL DEFAULT 'draft',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS lesson_words (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                word_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(lesson_id, word_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS homework_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                task_type TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                expected_answer TEXT,
+                metadata_json TEXT,
+                order_index INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS homework_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                answer TEXT NOT NULL,
+                is_correct INTEGER,
+                feedback TEXT,
+                created_at TEXT NOT NULL
+            );
             """
         )
         self._connection.commit()
@@ -148,6 +190,81 @@ class Database:
 
     def get_user_by_telegram_id(self, telegram_id: int) -> sqlite3.Row | None:
         return self.fetchone("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+
+
+    def create_lesson(
+        self,
+        student_user_id: int,
+        teacher_user_id: int | None,
+        title: str,
+        theme: str | None = None,
+        grammar_topic: str | None = None,
+    ) -> sqlite3.Row:
+        now = utc_now()
+        cursor = self.execute(
+            """
+            INSERT INTO lessons (teacher_user_id, student_user_id, title, theme, grammar_topic, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (teacher_user_id, student_user_id, title, theme, grammar_topic, now, now),
+        )
+        lesson = self.fetchone("SELECT * FROM lessons WHERE id = ?", (cursor.lastrowid,))
+        if lesson is None:
+            raise RuntimeError("Failed to create lesson")
+        return lesson
+
+    def list_lessons_for_student(self, student_user_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT * FROM lessons
+            WHERE student_user_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (student_user_id,),
+        )
+
+    def list_lessons_for_teacher(self, teacher_user_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT * FROM lessons
+            WHERE teacher_user_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (teacher_user_id,),
+        )
+
+    def add_word_to_lesson(self, lesson_id: int, word_id: int) -> bool:
+        cursor = self.execute(
+            """
+            INSERT OR IGNORE INTO lesson_words (lesson_id, word_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (lesson_id, word_id, utc_now()),
+        )
+        return cursor.rowcount > 0
+
+    def add_homework_task(
+        self,
+        lesson_id: int,
+        task_type: str,
+        prompt: str,
+        expected_answer: str | None = None,
+        metadata_json: str | None = None,
+        order_index: int = 0,
+    ) -> sqlite3.Row:
+        now = utc_now()
+        cursor = self.execute(
+            """
+            INSERT INTO homework_tasks (
+                lesson_id, task_type, prompt, expected_answer, metadata_json, order_index, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (lesson_id, task_type, prompt, expected_answer, metadata_json, order_index, now, now),
+        )
+        task = self.fetchone("SELECT * FROM homework_tasks WHERE id = ?", (cursor.lastrowid,))
+        if task is None:
+            raise RuntimeError("Failed to create homework task")
+        return task
 
     def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
         english = english.strip()

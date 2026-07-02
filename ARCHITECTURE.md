@@ -378,6 +378,78 @@ Constraint: `UNIQUE(user_id, activity_date)`.
 
 `init_schema()` дополнительно вызывает migration helper `_ensure_daily_activity_xp_column()` для старых баз без `xp_earned`.
 
+## 8.6 Lessons
+
+Lesson foundation добавляет будущую центральную сущность `Lesson`, но пока не подключает её к меню, game flow, AI-проверке или генерации упражнений. Роли по-прежнему определяются существующим `RoleResolver`; этот слой только подготавливает схему и database API для следующих этапов.
+
+В будущем урок будет связывать четыре направления данных:
+
+- `words` — слова и фразы, выбранные для урока;
+- grammar — тема и грамматический фокус урока;
+- homework — ручные задания к уроку;
+- reports — будущие отчёты по выполнению и прогрессу.
+
+### 8.6.1 `lessons`
+
+Базовая запись урока для одного ученика и опционального учителя.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | INTEGER PK AUTOINCREMENT | lesson id |
+| `teacher_user_id` | INTEGER | optional teacher user id |
+| `student_user_id` | INTEGER NOT NULL | student user id |
+| `title` | TEXT NOT NULL | название урока |
+| `theme` | TEXT | optional lexical/theme focus |
+| `grammar_topic` | TEXT | optional grammar focus |
+| `status` | TEXT NOT NULL DEFAULT `draft` | lifecycle status |
+| `created_at` | TEXT NOT NULL | UTC ISO string |
+| `updated_at` | TEXT NOT NULL | UTC ISO string |
+
+### 8.6.2 `lesson_words`
+
+Связующая таблица между уроками и существующими словами.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | INTEGER PK AUTOINCREMENT | link id |
+| `lesson_id` | INTEGER NOT NULL | lesson id |
+| `word_id` | INTEGER NOT NULL | word id from `words` |
+| `created_at` | TEXT NOT NULL | UTC ISO string |
+
+Constraint: `UNIQUE(lesson_id, word_id)`, поэтому повторное добавление того же слова в тот же урок игнорируется database method `add_word_to_lesson()`.
+
+### 8.6.3 `homework_tasks`
+
+Задания к уроку. На этом этапе задания создаются только database method; UI, menu entry и AI-генерация не добавлены.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | INTEGER PK AUTOINCREMENT | task id |
+| `lesson_id` | INTEGER NOT NULL | lesson id |
+| `task_type` | TEXT NOT NULL | тип задания для будущего handler layer |
+| `prompt` | TEXT NOT NULL | текст задания |
+| `expected_answer` | TEXT | optional expected answer |
+| `metadata_json` | TEXT | optional JSON metadata as text |
+| `order_index` | INTEGER NOT NULL DEFAULT 0 | ручная сортировка заданий |
+| `created_at` | TEXT NOT NULL | UTC ISO string |
+| `updated_at` | TEXT NOT NULL | UTC ISO string |
+
+### 8.6.4 `homework_answers`
+
+Будущие ответы учеников на задания. Таблица есть в schema foundation, но текущий flow её не использует.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | INTEGER PK AUTOINCREMENT | answer id |
+| `task_id` | INTEGER NOT NULL | homework task id |
+| `user_id` | INTEGER NOT NULL | answering user id |
+| `answer` | TEXT NOT NULL | ответ ученика |
+| `is_correct` | INTEGER | nullable manual/automated correctness flag |
+| `feedback` | TEXT | optional feedback |
+| `created_at` | TEXT NOT NULL | UTC ISO string |
+
+Связи на уровне приложения: `lessons.student_user_id` и `lessons.teacher_user_id` указывают на `users.id`; `lesson_words.lesson_id` указывает на `lessons.id`; `lesson_words.word_id` указывает на `words.id`; `homework_tasks.lesson_id` указывает на `lessons.id`; `homework_answers.task_id` указывает на `homework_tasks.id`; `homework_answers.user_id` указывает на `users.id`.
+
 ## 9. Правила добавления новых features
 
 1. **Не добавлять feature без явного сценария.** Сначала описать user flow: какая кнопка, какой handler, какое состояние в `context.user_data`, какие изменения в БД.
