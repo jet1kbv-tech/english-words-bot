@@ -6,6 +6,7 @@ from telegram.ext import ContextTypes
 from app.auth.roles import Role, RoleResolver
 from app.config import Settings
 from app.database import Database
+from app.ai.service import generate_word_translations
 from app.handlers.training import _today_moscow
 from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
 from app.lesson_metadata import lesson_display_name
@@ -25,6 +26,7 @@ _IMPORT_LESSON_WORDS = "teacher_import_lesson_words"
 _EDIT_LESSON_WORD = "teacher_edit_lesson_word"
 _PENDING_WORD_EDIT = "pending_lesson_word_edit"
 _PENDING_LESSON_WORDS = "pending_lesson_words"
+_PENDING_AI_TRANSLATION = "pending_ai_translation"
 _SELECTED_LESSON_WORDS = "selected_lesson_words"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
@@ -43,6 +45,9 @@ TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX = "teacher:lesson:words:select:toggle:
 TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX = "teacher:lesson:words:select:all:"
 TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX = "teacher:lesson:words:select:clear:"
 TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX = "teacher:lesson:words:select:done:"
+TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX = "teacher:lesson:words:ai_translate:"
+TEACHER_LESSON_WORDS_AI_APPLY_PREFIX = "teacher:lesson:words:ai_apply:"
+TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX = "teacher:lesson:words:ai_cancel:"
 TEACHER_LESSON_WORD_OPEN_PREFIX = "teacher:lesson:word:open:"
 TEACHER_LESSON_WORDS_CONFIRM_PREFIX = "teacher:lesson:words:confirm:"
 TEACHER_LESSON_WORDS_CANCEL_PREFIX = "teacher:lesson:words:cancel:"
@@ -188,6 +193,8 @@ def _lesson_words_selection_keyboard(lesson_id: int, words: list, selected_word_
         ]
         for word in words[:20]
     ]
+    if selected_word_ids:
+        rows.append([InlineKeyboardButton("🤖 Перевести", callback_data=f"{TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX}{lesson_id}")])
     rows.extend([
         [InlineKeyboardButton("✅ Выбрать все", callback_data=f"{TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("🧹 Очистить", callback_data=f"{TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX}{lesson_id}")],
@@ -236,6 +243,32 @@ def _lesson_words_preview_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_WORDS_CANCEL_PREFIX}{lesson_id}")],
     ])
 
+
+
+def _format_ai_translation_preview(translations: list[dict[str, str]]) -> str:
+    lines = ["Будут обновлены переводы", ""]
+    for item in translations:
+        lines.extend([str(item["english"]), "", f"→ {item['translation']}", ""])
+    return "\n".join(lines).rstrip()
+
+
+def _ai_translation_preview_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Применить", callback_data=f"{TEACHER_LESSON_WORDS_AI_APPLY_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX}{lesson_id}")],
+    ])
+
+
+def _selected_word_rows(service: LessonService, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> list:
+    words = service.list_lesson_words(lesson_id)
+    selected = _prune_lesson_words_selection(context, lesson_id, words)
+    rows = []
+    for word in words:
+        if int(word["word_id"]) in selected:
+            row = service.get_lesson_word(lesson_id, int(word["word_id"]))
+            if row is not None:
+                rows.append(row)
+    return rows
 
 def _normalize_word_edit_value(text: str, limit: int) -> str | None:
     value = text.strip()
@@ -386,6 +419,50 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             "topic": "Введите topic для слова.",
         }
         await query.edit_message_text(f"{prompts[field]}\n\nЧтобы очистить поле, отправьте '-' или '—' или 'пусто'.")
+        return
+
+    for ai_prefix in (TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX):
+        if not data.startswith(ai_prefix):
+            continue
+        lesson_id = _lesson_id_from_callback(data, ai_prefix)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            if query.message is not None:
+                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+            return
+        context.user_data["current_teacher_lesson_id"] = lesson_id
+        if ai_prefix == TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX:
+            context.user_data.pop(_PENDING_AI_TRANSLATION, None)
+            await _show_lesson_words_selection(update, context, lesson_id)
+            return
+        if ai_prefix == TEACHER_LESSON_WORDS_AI_APPLY_PREFIX:
+            draft = context.user_data.get(_PENDING_AI_TRANSLATION) or {}
+            translations = draft.get("translations") if int(draft.get("lesson_id", 0)) == lesson_id else None
+            if not translations:
+                context.user_data.pop(_PENDING_AI_TRANSLATION, None)
+                await _show_lesson_words_selection(update, context, lesson_id)
+                return
+            for item in translations:
+                db.update_word_translation(lesson_id, int(item["word_id"]), item["translation"])
+            context.user_data.pop(_PENDING_AI_TRANSLATION, None)
+            await _show_lesson_words(update, context, lesson_id, edit=True)
+            return
+        selected_rows = _selected_word_rows(service, context, lesson_id)
+        if not selected_rows:
+            await query.edit_message_text("Выберите хотя бы одно слово.", reply_markup=_lesson_words_selection_keyboard(lesson_id, service.list_lesson_words(lesson_id), set()))
+            return
+        await query.edit_message_text("Генерирую переводы...")
+        english_words = [str(word["english"]) for word in selected_rows]
+        ai_translations = await generate_word_translations(english_words)
+        if ai_translations is None:
+            await query.edit_message_text("Не удалось получить перевод.\n\nПопробуйте ещё раз.", reply_markup=_lesson_words_selection_keyboard(lesson_id, service.list_lesson_words(lesson_id), _selected_lesson_words(context, lesson_id)))
+            return
+        by_english = {item["english"].casefold(): item["translation"] for item in ai_translations}
+        draft_translations = [
+            {"word_id": int(word["id"]), "english": str(word["english"]), "translation": by_english[str(word["english"]).casefold()]}
+            for word in selected_rows
+        ]
+        context.user_data[_PENDING_AI_TRANSLATION] = {"lesson_id": lesson_id, "translations": draft_translations}
+        await query.edit_message_text(_format_ai_translation_preview(draft_translations), reply_markup=_ai_translation_preview_keyboard(lesson_id))
         return
     if data.startswith(TEACHER_LESSON_WORD_OPEN_PREFIX):
         ids = _lesson_word_ids_from_callback(data)

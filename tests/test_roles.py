@@ -3,7 +3,7 @@ import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
 from app.lesson_metadata import lesson_display_name
-from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_SELECT_PREFIX, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX, TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX, TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX, TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_SELECT_PREFIX, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX, TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX, TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX, TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX, TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.lesson_service import normalize_lesson_words_import
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
@@ -495,6 +495,103 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(student_update.callback_query.edits, [])
         self.assertEqual(student_update.callback_query.message.replies, [])
 
+
+    async def test_ai_translate_empty_selection_shows_message(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 27 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+
+        update = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertIn("Выберите хотя бы одно слово.", update.callback_query.edits[-1][0])
+        self.assertIsNone(self.context.user_data.get("pending_ai_translation"))
+
+    async def test_ai_translate_success_preview_apply_and_cleanup(self) -> None:
+        import app.handlers.teacher as teacher_module
+        lesson = self.db.create_teacher_lesson("Lesson 28 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt", "worth it"], self.teacher["id"])
+        words = self.db.list_lesson_words(lesson["id"])
+        self.context.user_data["selected_lesson_words"] = {lesson["id"]: {word["word_id"] for word in words}}
+        calls = []
+
+        async def fake_generate(english_words):
+            calls.append(english_words)
+            return [
+                {"english": "receipt", "translation": "чек"},
+                {"english": "worth it", "translation": "оно того стоит"},
+            ]
+
+        original = teacher_module.generate_word_translations
+        teacher_module.generate_word_translations = fake_generate
+        try:
+            update = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX}{lesson['id']}")
+            await handle_teacher_lesson_callback(update, self.context)
+        finally:
+            teacher_module.generate_word_translations = original
+
+        self.assertEqual(calls, [["receipt", "worth it"]])
+        self.assertIn("Генерирую переводы...", update.callback_query.edits[0][0])
+        self.assertIn("Будут обновлены переводы", update.callback_query.edits[-1][0])
+        self.assertIn("→ чек", update.callback_query.edits[-1][0])
+        self.assertEqual(self.db.get_lesson_word(lesson["id"], words[0]["word_id"])["translation"], "")
+        self.assertIsNotNone(self.context.user_data.get("pending_ai_translation"))
+
+        apply_update = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_APPLY_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(apply_update, self.context)
+
+        self.assertEqual(self.db.get_lesson_word(lesson["id"], words[0]["word_id"])["translation"], "чек")
+        self.assertEqual(self.db.get_lesson_word(lesson["id"], words[1]["word_id"])["translation"], "оно того стоит")
+        self.assertIsNone(self.context.user_data.get("pending_ai_translation"))
+        self.assertIn("📖 Words", apply_update.callback_query.edits[-1][0])
+
+    async def test_ai_translate_invalid_json_fallback_does_not_save(self) -> None:
+        import app.handlers.teacher as teacher_module
+        lesson = self.db.create_teacher_lesson("Lesson 29 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word = self.db.list_lesson_words(lesson["id"])[0]
+        self.context.user_data["selected_lesson_words"] = {lesson["id"]: {word["word_id"]}}
+
+        async def fake_generate(_english_words):
+            return None
+
+        original = teacher_module.generate_word_translations
+        teacher_module.generate_word_translations = fake_generate
+        try:
+            update = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX}{lesson['id']}")
+            await handle_teacher_lesson_callback(update, self.context)
+        finally:
+            teacher_module.generate_word_translations = original
+
+        self.assertIn("Не удалось получить перевод.", update.callback_query.edits[-1][0])
+        self.assertEqual(self.db.get_lesson_word(lesson["id"], word["word_id"])["translation"], "")
+        self.assertIsNone(self.context.user_data.get("pending_ai_translation"))
+
+    async def test_ai_translate_cancel_cleans_draft_keeps_selection_and_does_not_save(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 30 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word = self.db.list_lesson_words(lesson["id"])[0]
+        self.context.user_data["selected_lesson_words"] = {lesson["id"]: {word["word_id"]}}
+        self.context.user_data["pending_ai_translation"] = {"lesson_id": lesson["id"], "translations": [{"word_id": word["word_id"], "english": "receipt", "translation": "чек"}]}
+
+        update = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertIsNone(self.context.user_data.get("pending_ai_translation"))
+        self.assertEqual(self.context.user_data["selected_lesson_words"][lesson["id"]], {word["word_id"]})
+        self.assertEqual(self.db.get_lesson_word(lesson["id"], word["word_id"])["translation"], "")
+        self.assertIn("Выбрано: 1 из 1", update.callback_query.edits[-1][0])
+
+    async def test_student_cannot_access_ai_translation_callbacks(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 31 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        update = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX}{lesson['id']}", username="privetnormalno", user_id=103)
+
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.edits, [])
+        self.assertEqual(update.callback_query.message.replies, [])
+        self.assertIsNone(self.context.user_data.get("pending_ai_translation"))
+
     async def test_teacher_can_add_student(self) -> None:
         first = self._update(ADD_STUDENT)
         self.assertTrue(await handle_teacher_message(first, self.context))
@@ -561,3 +658,28 @@ class StudentAccessValidationTests(unittest.TestCase):
         for value in invalid_values:
             with self.subTest(value=value):
                 self.assertFalse(validate_username(normalize_username(value)))
+
+class AIWordTranslationServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_generate_word_translations_rejects_invalid_json(self) -> None:
+        import os
+        from unittest.mock import patch
+        from app.ai.service import generate_word_translations
+
+        class FakeProvider:
+            async def generate_word_translations(self, *, words):
+                return "not json"
+
+        with patch.dict(os.environ, {"AI_PROVIDER": "polza"}), patch("app.ai.service.PolzaAIProvider", return_value=FakeProvider()):
+            self.assertIsNone(await generate_word_translations(["receipt"]))
+
+    async def test_generate_word_translations_rejects_missing_items(self) -> None:
+        import os
+        from unittest.mock import patch
+        from app.ai.service import generate_word_translations
+
+        class FakeProvider:
+            async def generate_word_translations(self, *, words):
+                return '[{"english":"receipt","translation":"чек"}]'
+
+        with patch.dict(os.environ, {"AI_PROVIDER": "polza"}), patch("app.ai.service.PolzaAIProvider", return_value=FakeProvider()):
+            self.assertIsNone(await generate_word_translations(["receipt", "worth it"]))
