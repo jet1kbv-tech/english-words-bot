@@ -10,6 +10,7 @@ from app.ai.service import generate_word_translations
 from app.handlers.training import _today_moscow
 from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
 from app.lesson_metadata import lesson_display_name
+from app.notifications.notification_service import NotificationService
 from app.lesson_repository import LessonRepository
 from app.lesson_service import LessonService, LessonWordImportError, normalize_lesson_words_import
 from app.student_access_service import StudentAccessService
@@ -503,6 +504,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             await query.edit_message_text("Ученик недоступен.", reply_markup=_assign_student_keyboard(lesson_id, _student_users(context)))
             return
         assignment = service.assign_lesson_to_student(lesson_id, str(student["username"]), _teacher_user_id(update, db))
+        await NotificationService(db).notify_lesson_assigned(getattr(context, "bot", None), str(student["username"]), summary)
         await query.edit_message_text(_format_lesson_detail(summary, assignment), reply_markup=_lesson_detail_keyboard(lesson_id, assignment))
         return
 
