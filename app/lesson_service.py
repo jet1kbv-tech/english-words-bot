@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 
 from app.lesson_repository import LessonRepository
+from app.student_access_service import normalize_username
 
 MAX_LESSON_WORDS_IMPORT = 300
 MAX_LESSON_WORD_LENGTH = 200
@@ -61,3 +62,18 @@ class LessonService:
         if not words:
             raise ValueError("words must not be empty")
         return self.repository.add_lesson_words(lesson_id, words, owner_user_id)
+
+    def assign_lesson_to_student(self, lesson_id: int, student_username: str, assigned_by_user_id: int | None = None) -> sqlite3.Row:
+        normalized = normalize_username(student_username)
+        if not normalized:
+            raise ValueError("student username must not be empty")
+        return self.repository.assign_lesson_to_student(lesson_id, normalized, assigned_by_user_id)
+
+    def unassign_lesson(self, lesson_id: int) -> None:
+        self.repository.unassign_lesson(lesson_id)
+
+    def get_active_lesson_assignment(self, lesson_id: int) -> sqlite3.Row | None:
+        return self.repository.get_active_lesson_assignment(lesson_id)
+
+    def list_lesson_assignment_history(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.repository.list_lesson_assignment_history(lesson_id)

@@ -33,3 +33,15 @@ class LessonRepository:
 
     def add_lesson_words(self, lesson_id: int, words: list[str], owner_user_id: int | None = None) -> list[sqlite3.Row]:
         return self.db.add_lesson_words(lesson_id, words, owner_user_id)
+
+    def assign_lesson_to_student(self, lesson_id: int, student_username: str, assigned_by_user_id: int | None = None) -> sqlite3.Row:
+        return self.db.assign_lesson_to_student(lesson_id, student_username, assigned_by_user_id)
+
+    def unassign_lesson(self, lesson_id: int) -> None:
+        self.db.unassign_lesson(lesson_id)
+
+    def get_active_lesson_assignment(self, lesson_id: int) -> sqlite3.Row | None:
+        return self.db.get_active_lesson_assignment(lesson_id)
+
+    def list_lesson_assignment_history(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.db.list_lesson_assignment_history(lesson_id)

@@ -455,3 +455,53 @@ class StudentAccessAdditionalDatabaseTests(unittest.TestCase):
         row = self.db.add_student_access("studentone")
 
         self.assertEqual(row["is_active"], 1)
+
+class LessonAssignmentDatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.teacher = self.db.upsert_user(10, "romateaches", "Roma")
+        self.lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_create_assignment(self) -> None:
+        assignment = self.db.assign_lesson_to_student(self.lesson["id"], "@PrivetNormalno", self.teacher["id"])
+        self.assertEqual(assignment["student_username"], "privetnormalno")
+        self.assertEqual(assignment["status"], "ASSIGNED")
+        self.assertEqual(assignment["is_active"], 1)
+
+    def test_reassign_creates_history_and_only_one_active(self) -> None:
+        self.db.assign_lesson_to_student(self.lesson["id"], "privetnormalno", self.teacher["id"])
+        self.db.assign_lesson_to_student(self.lesson["id"], "wp_bvv", self.teacher["id"])
+        history = self.db.list_lesson_assignment_history(self.lesson["id"])
+        self.assertEqual([row["student_username"] for row in history], ["privetnormalno", "wp_bvv"])
+        self.assertEqual(sum(int(row["is_active"]) for row in history), 1)
+        self.assertEqual(self.db.get_active_lesson_assignment(self.lesson["id"])["student_username"], "wp_bvv")
+
+    def test_assign_same_student_does_not_duplicate_active_assignment(self) -> None:
+        first = self.db.assign_lesson_to_student(self.lesson["id"], "privetnormalno", self.teacher["id"])
+        second = self.db.assign_lesson_to_student(self.lesson["id"], "@privetnormalno", self.teacher["id"])
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(len(self.db.list_lesson_assignment_history(self.lesson["id"])), 1)
+
+    def test_unassign_preserves_history_and_clears_active_assignment(self) -> None:
+        self.db.assign_lesson_to_student(self.lesson["id"], "privetnormalno", self.teacher["id"])
+        self.db.unassign_lesson(self.lesson["id"])
+        self.assertIsNone(self.db.get_active_lesson_assignment(self.lesson["id"]))
+        history = self.db.list_lesson_assignment_history(self.lesson["id"])
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["is_active"], 0)
+        self.assertIsNotNone(history[0]["unassigned_at"])
+
+    def test_missing_lesson_validation(self) -> None:
+        with self.assertRaises(ValueError):
+            self.db.assign_lesson_to_student(999, "privetnormalno", self.teacher["id"])
+
+    def test_no_student_username_or_student_id_added_to_lessons_table(self) -> None:
+        columns = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lessons)")}
+        self.assertNotIn("student_username", columns)
+        self.assertNotIn("student_id", columns)

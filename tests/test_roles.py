@@ -3,7 +3,7 @@ import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
 from app.lesson_metadata import lesson_display_name
-from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_SELECT_PREFIX, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX, TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX, TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX, TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX, TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX, TEACHER_LESSON_WORDS_AI_EDIT_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_ASSIGN_PREFIX, TEACHER_LESSON_ASSIGN_STUDENT_PREFIX, TEACHER_LESSON_UNASSIGN_PREFIX, _format_assign_student_screen, _assign_student_keyboard, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_SELECT_PREFIX, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX, TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX, TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX, TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX, TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX, TEACHER_LESSON_WORDS_AI_EDIT_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.lesson_service import normalize_lesson_words_import
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
@@ -59,6 +59,23 @@ class TeacherLessonUiTests(unittest.TestCase):
 
     def test_lessons_screen_empty_state(self) -> None:
         self.assertIn("Пока нет уроков.", _format_lessons_screen([]))
+
+    def test_lesson_detail_shows_dash_without_assignment(self) -> None:
+        formatted = _format_lesson_detail({"title": "Lesson 15 — Food", "lesson_number": 15, "topic": "Food", "description": None, "level": None, "status": "DRAFT", "words_count": 0, "grammar_count": 0, "exercises_count": 0, "homework_count": 0})
+        self.assertIn("👤 Student", formatted)
+        self.assertIn("\n—\n", formatted)
+
+    def test_lesson_detail_shows_active_student(self) -> None:
+        formatted = _format_lesson_detail({"title": "Lesson 15 — Food", "lesson_number": 15, "topic": "Food", "description": None, "level": None, "status": "DRAFT", "words_count": 0, "grammar_count": 0, "exercises_count": 0, "homework_count": 0}, {"student_username": "privetnormalno"})
+        self.assertIn("@privetnormalno", formatted)
+
+    def test_assign_screen_lists_available_student_targets(self) -> None:
+        summary = {"title": "Lesson 15 — Food", "lesson_number": 15, "topic": "Food"}
+        students = [{"username": "privetnormalno"}, {"username": "wp_bvv"}]
+        self.assertIn("Выберите ученика", _format_assign_student_screen(summary, students))
+        buttons = [button.text for row in _assign_student_keyboard(15, students).inline_keyboard for button in row]
+        self.assertIn("@privetnormalno", buttons)
+        self.assertIn("@wp_bvv", buttons)
 
     def test_lesson_detail_formatter_shows_counts(self) -> None:
         summary = {
@@ -800,3 +817,21 @@ class AIWordTranslationServiceTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict(os.environ, {"AI_PROVIDER": "polza"}), patch("app.ai.service.PolzaAIProvider", return_value=FakeProvider()):
             self.assertIsNone(await generate_word_translations(["receipt", "worth it"]))
+
+class LessonAssignmentCallbackTests(TeacherStudentAccessTests):
+    async def test_missing_student_validation(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        update = self._callback_update(f"{TEACHER_LESSON_ASSIGN_STUDENT_PREFIX}{lesson['id']}:missingstudent")
+
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertIn("Ученик недоступен.", update.callback_query.edits[-1][0])
+        self.assertIsNone(self.db.get_active_lesson_assignment(lesson["id"]))
+
+    async def test_student_access_deny_for_assignment_callback(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        update = self._callback_update(f"{TEACHER_LESSON_ASSIGN_PREFIX}{lesson['id']}", username="privetnormalno", user_id=103)
+
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.edits, [])
