@@ -3,7 +3,7 @@ import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
 from app.lesson_metadata import lesson_display_name
-from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.lesson_service import normalize_lesson_words_import
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
@@ -319,6 +319,72 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(update.callback_query.edits, [])
         self.assertEqual(update.callback_query.message.replies, [])
+
+
+    async def test_teacher_can_update_word_detail_fields_and_cleanup_state(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word_id = self.db.list_lesson_words(lesson["id"])[0]["word_id"]
+
+        for field, callback_label, value, expected_line in [
+            ("translation", "Translation", " чек ", "Translation: чек"),
+            ("example", "Example", "Can I have the receipt, please?", "Example: Can I have the receipt, please?"),
+            ("topic", "Topic", " Shopping ", "Topic: Shopping"),
+        ]:
+            with self.subTest(field=field):
+                edit_update = self._callback_update(f"{TEACHER_LESSON_WORD_EDIT_PREFIX}{field}:{lesson['id']}:{word_id}")
+                await handle_teacher_lesson_callback(edit_update, self.context)
+                self.assertIn(f"Введите {('перевод слова' if field == 'translation' else 'пример для слова' if field == 'example' else 'topic для слова')}", edit_update.callback_query.edits[-1][0])
+                self.assertIn("Чтобы очистить поле", edit_update.callback_query.edits[-1][0])
+
+                message_update = self._update(value)
+                self.assertTrue(await handle_teacher_message(message_update, self.context))
+
+                self.assertIn(expected_line, message_update.effective_message.replies[-1][0])
+                self.assertIsNone(self.context.user_data.get("teacher_action"))
+                self.assertIsNone(self.context.user_data.get("pending_lesson_word_edit"))
+
+    async def test_teacher_can_clear_word_detail_value_and_return_to_detail(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word_id = self.db.list_lesson_words(lesson["id"])[0]["word_id"]
+        self.db.update_word_translation(lesson["id"], word_id, "чек")
+
+        edit_update = self._callback_update(f"{TEACHER_LESSON_WORD_EDIT_PREFIX}translation:{lesson['id']}:{word_id}")
+        await handle_teacher_lesson_callback(edit_update, self.context)
+        message_update = self._update("пусто")
+
+        self.assertTrue(await handle_teacher_message(message_update, self.context))
+
+        self.assertIn("📖 Word", message_update.effective_message.replies[-1][0])
+        self.assertIn("Translation: —", message_update.effective_message.replies[-1][0])
+        buttons = [button.text for row in message_update.effective_message.replies[-1][1].inline_keyboard for button in row]
+        self.assertIn("⬅️ Words", buttons)
+
+    async def test_student_cannot_start_word_detail_edit_callback(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word_id = self.db.list_lesson_words(lesson["id"])[0]["word_id"]
+        update = self._callback_update(
+            f"{TEACHER_LESSON_WORD_EDIT_PREFIX}translation:{lesson['id']}:{word_id}", username="privetnormalno", user_id=103
+        )
+
+        await handle_teacher_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.edits, [])
+        self.assertEqual(update.callback_query.message.replies, [])
+        self.assertIsNone(self.context.user_data.get("pending_lesson_word_edit"))
+
+    async def test_word_detail_has_edit_buttons(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word_id = self.db.list_lesson_words(lesson["id"])[0]["word_id"]
+
+        detail_update = self._callback_update(f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{lesson['id']}:{word_id}")
+        await handle_teacher_lesson_callback(detail_update, self.context)
+
+        buttons = [button.text for row in detail_update.callback_query.edits[-1][1].inline_keyboard for button in row]
+        self.assertEqual(buttons, ["✏️ Translation", "✏️ Example", "✏️ Topic", "⬅️ Words"])
 
     async def test_teacher_import_words_preview_confirm_and_order(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 20 — Food", self.teacher["id"])

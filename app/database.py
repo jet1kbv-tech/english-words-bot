@@ -531,6 +531,26 @@ class Database:
             (word_id, owner_user_id),
         )
 
+    def update_lesson_word_field(self, lesson_id: int, word_id: int, field: str, value: str | None) -> bool:
+        if field not in {"translation", "example", "topic"}:
+            raise ValueError("unsupported word field")
+        if self.get_lesson_word(lesson_id, word_id) is None:
+            return False
+        cursor = self.execute(
+            f"UPDATE words SET {field} = ?, updated_at = ? WHERE id = ?",
+            (value, utc_now(), word_id),
+        )
+        return cursor.rowcount > 0
+
+    def update_word_translation(self, lesson_id: int, word_id: int, value: str | None) -> bool:
+        return self.update_lesson_word_field(lesson_id, word_id, "translation", value)
+
+    def update_word_example(self, lesson_id: int, word_id: int, value: str | None) -> bool:
+        return self.update_lesson_word_field(lesson_id, word_id, "example", value)
+
+    def update_word_topic(self, lesson_id: int, word_id: int, value: str | None) -> bool:
+        return self.update_lesson_word_field(lesson_id, word_id, "topic", value)
+
     def delete_word(self, word_id: int, owner_user_id: int) -> bool:
         if self.get_owned_word(word_id, owner_user_id) is None:
             return False

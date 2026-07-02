@@ -22,6 +22,8 @@ _CREATE_LESSON_GRAMMAR = "teacher_create_lesson_grammar"
 _OPTIONAL_SKIP = {"", "-", "пропустить", "skip"}
 _ADD_STUDENT = "teacher_add_student"
 _IMPORT_LESSON_WORDS = "teacher_import_lesson_words"
+_EDIT_LESSON_WORD = "teacher_edit_lesson_word"
+_PENDING_WORD_EDIT = "pending_lesson_word_edit"
 _PENDING_LESSON_WORDS = "pending_lesson_words"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
@@ -38,6 +40,7 @@ TEACHER_LESSON_WORDS_ADD_PREFIX = "teacher:lesson:words:add:"
 TEACHER_LESSON_WORD_OPEN_PREFIX = "teacher:lesson:word:open:"
 TEACHER_LESSON_WORDS_CONFIRM_PREFIX = "teacher:lesson:words:confirm:"
 TEACHER_LESSON_WORDS_CANCEL_PREFIX = "teacher:lesson:words:cancel:"
+TEACHER_LESSON_WORD_EDIT_PREFIX = "teacher:lesson:word:edit:"
 TEACHER_LESSONS_LIST_CALLBACK = "teacher:lessons:list"
 TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_WORDS_PREFIX,
@@ -50,6 +53,7 @@ TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_WORDS_CONFIRM_PREFIX,
     TEACHER_LESSON_WORDS_CANCEL_PREFIX,
     TEACHER_LESSON_WORD_OPEN_PREFIX,
+    TEACHER_LESSON_WORD_EDIT_PREFIX,
 )
 
 
@@ -158,8 +162,13 @@ def _format_lesson_word_detail(summary, word) -> str:
     ])
 
 
-def _lesson_word_detail_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")]])
+def _lesson_word_detail_keyboard(lesson_id: int, word_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✏️ Translation", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}translation:{lesson_id}:{word_id}")],
+        [InlineKeyboardButton("✏️ Example", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}example:{lesson_id}:{word_id}")],
+        [InlineKeyboardButton("✏️ Topic", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}topic:{lesson_id}:{word_id}")],
+        [InlineKeyboardButton("⬅️ Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")],
+    ])
 
 
 def _format_lesson_words_preview(words: list[str]) -> str:
@@ -171,6 +180,29 @@ def _lesson_words_preview_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✅ Сохранить", callback_data=f"{TEACHER_LESSON_WORDS_CONFIRM_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_WORDS_CANCEL_PREFIX}{lesson_id}")],
     ])
+
+
+def _normalize_word_edit_value(text: str, limit: int) -> str | None:
+    value = text.strip()
+    if value.casefold() in {"-", "—", "пусто"}:
+        return None
+    if len(value) > limit:
+        raise ValueError(f"Максимум {limit} символов.")
+    return value
+
+
+def _word_edit_limit(field: str) -> int:
+    return {"translation": 500, "example": 1000, "topic": 100}[field]
+
+
+def _update_word_field(db: Database, lesson_id: int, word_id: int, field: str, value: str | None) -> bool:
+    if field == "translation":
+        return db.update_word_translation(lesson_id, word_id, value)
+    if field == "example":
+        return db.update_word_example(lesson_id, word_id, value)
+    if field == "topic":
+        return db.update_word_topic(lesson_id, word_id, value)
+    raise ValueError("unsupported word field")
 
 
 def _lesson_words_prompt() -> str:
@@ -231,6 +263,17 @@ def _lesson_id_from_callback(data: str, prefix: str) -> int | None:
     return int(lesson_id_text) if lesson_id_text.isdigit() else None
 
 
+def _lesson_word_edit_from_callback(data: str) -> tuple[str, int, int] | None:
+    payload = data.removeprefix(TEACHER_LESSON_WORD_EDIT_PREFIX).strip()
+    field, sep1, rest = payload.partition(":")
+    lesson_id_text, sep2, word_id_text = rest.partition(":")
+    if field not in {"translation", "example", "topic"} or sep1 != ":" or sep2 != ":":
+        return None
+    if not lesson_id_text.isdigit() or not word_id_text.isdigit():
+        return None
+    return field, int(lesson_id_text), int(word_id_text)
+
+
 def _lesson_word_ids_from_callback(data: str) -> tuple[int, int] | None:
     ids_text = data.removeprefix(TEACHER_LESSON_WORD_OPEN_PREFIX).strip()
     lesson_id_text, separator, word_id_text = ids_text.partition(":")
@@ -254,6 +297,23 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         if query.message is not None:
             await query.message.reply_text(_format_lessons_screen(lessons), reply_markup=_lessons_list_keyboard(lessons))
         return
+    if data.startswith(TEACHER_LESSON_WORD_EDIT_PREFIX):
+        parsed = _lesson_word_edit_from_callback(data)
+        if parsed is None:
+            return
+        field, lesson_id, word_id = parsed
+        if service.get_lesson_word(lesson_id, word_id) is None:
+            await query.edit_message_text("Word не найден.")
+            return
+        context.user_data["teacher_action"] = _EDIT_LESSON_WORD
+        context.user_data[_PENDING_WORD_EDIT] = {"field": field, "lesson_id": lesson_id, "word_id": word_id}
+        prompts = {
+            "translation": "Введите перевод слова.",
+            "example": "Введите пример для слова.",
+            "topic": "Введите topic для слова.",
+        }
+        await query.edit_message_text(f"{prompts[field]}\n\nЧтобы очистить поле, отправьте '-' или '—' или 'пусто'.")
+        return
     if data.startswith(TEACHER_LESSON_WORD_OPEN_PREFIX):
         ids = _lesson_word_ids_from_callback(data)
         if ids is None:
@@ -262,7 +322,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         summary = service.get_lesson_summary(lesson_id)
         word = service.get_lesson_word(lesson_id, word_id) if summary is not None else None
         context.user_data["current_teacher_lesson_id"] = lesson_id
-        await query.edit_message_text(_format_lesson_word_detail(summary, word), reply_markup=_lesson_word_detail_keyboard(lesson_id))
+        await query.edit_message_text(_format_lesson_word_detail(summary, word), reply_markup=_lesson_word_detail_keyboard(lesson_id, word_id))
         return
     for words_prefix in (TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX):
         if not data.startswith(words_prefix):
@@ -492,6 +552,32 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         return True
 
     action = context.user_data.get("teacher_action")
+    if action == _EDIT_LESSON_WORD:
+        draft = context.user_data.get(_PENDING_WORD_EDIT) or {}
+        field = str(draft.get("field") or "")
+        lesson_id = int(draft.get("lesson_id") or 0)
+        word_id = int(draft.get("word_id") or 0)
+        if field not in {"translation", "example", "topic"} or not lesson_id or not word_id:
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_WORD_EDIT, None)
+            return False
+        try:
+            value = _normalize_word_edit_value(text, _word_edit_limit(field))
+        except ValueError as error:
+            await update.effective_message.reply_text(str(error))
+            return True
+        if value is None and field == "translation":
+            value = ""
+        saved = _update_word_field(db, lesson_id, word_id, field, value)
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_WORD_EDIT, None)
+        if not saved:
+            await update.effective_message.reply_text("Word не найден.")
+            return True
+        summary = _lesson_service(db).get_lesson_summary(lesson_id)
+        word = _lesson_service(db).get_lesson_word(lesson_id, word_id)
+        await update.effective_message.reply_text(_format_lesson_word_detail(summary, word), reply_markup=_lesson_word_detail_keyboard(lesson_id, word_id))
+        return True
     if action == _IMPORT_LESSON_WORDS:
         draft = context.user_data.get(_PENDING_LESSON_WORDS) or {}
         lesson_id = int(draft.get("lesson_id") or context.user_data.get("current_teacher_lesson_id") or 0)
