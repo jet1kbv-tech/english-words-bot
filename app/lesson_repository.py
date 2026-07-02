@@ -24,3 +24,9 @@ class LessonRepository:
 
     def get_lesson_summary(self, lesson_id: int) -> sqlite3.Row | None:
         return self.db.get_lesson_summary(lesson_id)
+
+    def list_lesson_words(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.db.list_lesson_words(lesson_id)
+
+    def add_lesson_words(self, lesson_id: int, words: list[str], owner_user_id: int | None = None) -> list[sqlite3.Row]:
+        return self.db.add_lesson_words(lesson_id, words, owner_user_id)

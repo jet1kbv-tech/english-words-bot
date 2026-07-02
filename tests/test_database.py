@@ -309,6 +309,23 @@ class LessonDatabaseTests(unittest.TestCase):
         rows = self.db.fetchall("SELECT * FROM lesson_words WHERE lesson_id = ?", (lesson["id"],))
         self.assertEqual(len(rows), 1)
 
+
+    def test_add_lesson_words_imports_single_word(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 18 — Food", self.teacher["id"])
+
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+
+        words = self.db.list_lesson_words(lesson["id"])
+        self.assertEqual([word["text"] for word in words], ["receipt"])
+
+    def test_add_lesson_words_keeps_order(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 19 — Food", self.teacher["id"])
+
+        self.db.add_lesson_words(lesson["id"], ["receipt", "worth it", "stale"], self.teacher["id"])
+
+        words = self.db.list_lesson_words(lesson["id"])
+        self.assertEqual([word["text"] for word in words], ["receipt", "worth it", "stale"])
+
     def test_add_homework_task_creates_task(self) -> None:
         lesson = self.db.create_lesson(self.student["id"], self.teacher["id"], "Homework")
 

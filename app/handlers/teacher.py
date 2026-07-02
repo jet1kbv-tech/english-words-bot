@@ -10,7 +10,7 @@ from app.handlers.training import _today_moscow
 from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
 from app.lesson_metadata import lesson_display_name
 from app.lesson_repository import LessonRepository
-from app.lesson_service import LessonService
+from app.lesson_service import LessonService, LessonWordImportError, normalize_lesson_words_import
 from app.student_access_service import StudentAccessService
 
 _SELECT_PROGRESS = "teacher_select_progress"
@@ -21,6 +21,8 @@ _CREATE_LESSON_THEME = "teacher_create_lesson_theme"
 _CREATE_LESSON_GRAMMAR = "teacher_create_lesson_grammar"
 _OPTIONAL_SKIP = {"", "-", "пропустить", "skip"}
 _ADD_STUDENT = "teacher_add_student"
+_IMPORT_LESSON_WORDS = "teacher_import_lesson_words"
+_PENDING_LESSON_WORDS = "pending_lesson_words"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
 LESSON_BACK_TO_LIST = "⬅️ К списку lessons"
@@ -32,6 +34,9 @@ TEACHER_LESSON_EXERCISES_PREFIX = "teacher:lesson:exercises:"
 TEACHER_LESSON_HOMEWORK_PREFIX = "teacher:lesson:homework:"
 TEACHER_LESSON_AI_PREFIX = "teacher:lesson:ai:"
 TEACHER_LESSON_BACK_PREFIX = "teacher:lesson:back:"
+TEACHER_LESSON_WORDS_ADD_PREFIX = "teacher:lesson:words:add:"
+TEACHER_LESSON_WORDS_CONFIRM_PREFIX = "teacher:lesson:words:confirm:"
+TEACHER_LESSON_WORDS_CANCEL_PREFIX = "teacher:lesson:words:cancel:"
 TEACHER_LESSONS_LIST_CALLBACK = "teacher:lessons:list"
 TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_WORDS_PREFIX,
@@ -40,6 +45,9 @@ TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_HOMEWORK_PREFIX,
     TEACHER_LESSON_AI_PREFIX,
     TEACHER_LESSON_BACK_PREFIX,
+    TEACHER_LESSON_WORDS_ADD_PREFIX,
+    TEACHER_LESSON_WORDS_CONFIRM_PREFIX,
+    TEACHER_LESSON_WORDS_CANCEL_PREFIX,
 )
 
 
@@ -107,6 +115,48 @@ def _lesson_detail_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
 
 
 
+def _format_lesson_words(words: list) -> str:
+    if not words:
+        return "📖 Words\n\nВ этом уроке пока нет слов."
+    lines = ["📖 Words", "", f"Всего слов: {len(words)}", ""]
+    lines.extend(f"• {word['text']}" for word in words)
+    return "\n".join(lines)
+
+
+def _lesson_words_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Добавить слова", callback_data=f"{TEACHER_LESSON_WORDS_ADD_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("⬅️ Lesson", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")],
+    ])
+
+
+def _format_lesson_words_preview(words: list[str]) -> str:
+    return "\n".join(["Будут добавлены:", "", *(f"{index}. {word}" for index, word in enumerate(words, start=1))])
+
+
+def _lesson_words_preview_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Сохранить", callback_data=f"{TEACHER_LESSON_WORDS_CONFIRM_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_WORDS_CANCEL_PREFIX}{lesson_id}")],
+    ])
+
+
+def _lesson_words_prompt() -> str:
+    return "Отправьте список слов.\n\nКаждое слово с новой строки.\n\nНапример\n\nreceipt\nworth it\nstale"
+
+
+async def _show_lesson_words(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int, *, edit: bool = False) -> None:
+    db: Database = context.application.bot_data["db"]
+    service = _lesson_service(db)
+    words = service.list_lesson_words(lesson_id)
+    text = _format_lesson_words(words)
+    markup = _lesson_words_keyboard(lesson_id)
+    if edit and update.callback_query is not None:
+        await update.callback_query.edit_message_text(text, reply_markup=markup)
+    elif update.effective_message is not None:
+        await update.effective_message.reply_text(text, reply_markup=markup)
+
+
 def _format_lesson_section(summary, section: str) -> str:
     descriptions = {
         "words": ("📖 Words", "Этот раздел скоро позволит добавлять и редактировать слова урока."),
@@ -164,6 +214,35 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         if query.message is not None:
             await query.message.reply_text(_format_lessons_screen(lessons), reply_markup=_lessons_list_keyboard(lessons))
         return
+    for words_prefix in (TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX):
+        if not data.startswith(words_prefix):
+            continue
+        lesson_id = _lesson_id_from_callback(data, words_prefix)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            if query.message is not None:
+                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+            return
+        context.user_data["current_teacher_lesson_id"] = lesson_id
+        if words_prefix == TEACHER_LESSON_WORDS_ADD_PREFIX:
+            context.user_data["teacher_action"] = _IMPORT_LESSON_WORDS
+            context.user_data[_PENDING_LESSON_WORDS] = {"lesson_id": lesson_id, "source": "manual", "words": []}
+            if query.message is not None:
+                await query.message.reply_text(_lesson_words_prompt())
+            return
+        draft = context.user_data.get(_PENDING_LESSON_WORDS)
+        if words_prefix == TEACHER_LESSON_WORDS_CANCEL_PREFIX:
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_LESSON_WORDS, None)
+            await _show_lesson_words(update, context, lesson_id, edit=True)
+            return
+        if not draft or int(draft.get("lesson_id", 0)) != lesson_id or not draft.get("words"):
+            await _show_lesson_words(update, context, lesson_id, edit=True)
+            return
+        service.add_lesson_words(lesson_id, list(draft["words"]), owner_user_id=_teacher_user_id(update, db))
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_LESSON_WORDS, None)
+        await _show_lesson_words(update, context, lesson_id, edit=True)
+        return
     for prefix in TEACHER_LESSON_CALLBACK_PREFIXES:
         if not data.startswith(prefix):
             continue
@@ -186,6 +265,9 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             TEACHER_LESSON_HOMEWORK_PREFIX: "homework",
             TEACHER_LESSON_AI_PREFIX: "ai",
         }
+        if prefix == TEACHER_LESSON_WORDS_PREFIX:
+            await _show_lesson_words(update, context, lesson_id, edit=True)
+            return
         await query.edit_message_text(_format_lesson_section(summary, section_by_prefix[prefix]), reply_markup=_lesson_section_keyboard(lesson_id))
         return
 
@@ -360,6 +442,21 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         return True
 
     action = context.user_data.get("teacher_action")
+    if action == _IMPORT_LESSON_WORDS:
+        draft = context.user_data.get(_PENDING_LESSON_WORDS) or {}
+        lesson_id = int(draft.get("lesson_id") or context.user_data.get("current_teacher_lesson_id") or 0)
+        if not lesson_id:
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_LESSON_WORDS, None)
+            return False
+        try:
+            words = normalize_lesson_words_import(text)
+        except LessonWordImportError as error:
+            await update.effective_message.reply_text(str(error))
+            return True
+        context.user_data[_PENDING_LESSON_WORDS] = {"lesson_id": lesson_id, "source": "manual", "words": words}
+        await update.effective_message.reply_text(_format_lesson_words_preview(words), reply_markup=_lesson_words_preview_keyboard(lesson_id))
+        return True
     if action == _ADD_STUDENT:
         service = StudentAccessService(db)
         username = service.normalize_username(text)

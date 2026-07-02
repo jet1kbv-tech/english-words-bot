@@ -418,6 +418,47 @@ class Database:
             params,
         )
 
+
+    def list_lesson_words(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            """
+            SELECT lesson_words.*, words.english AS text
+            FROM lesson_words
+            JOIN words ON words.id = lesson_words.word_id
+            WHERE lesson_words.lesson_id = ?
+            ORDER BY lesson_words.id ASC
+            """,
+            (lesson_id,),
+        )
+
+    def add_lesson_words(self, lesson_id: int, words: list[str], owner_user_id: int | None = None) -> list[sqlite3.Row]:
+        lesson = self.get_lesson(lesson_id)
+        if lesson is None:
+            raise ValueError("lesson not found")
+        owner_id = owner_user_id or lesson["teacher_user_id"] or lesson["student_user_id"]
+        if owner_id is None:
+            raise ValueError("word owner is required")
+        created_word_ids: list[int] = []
+        now = utc_now()
+        for word in words:
+            cursor = self.execute(
+                """
+                INSERT INTO words (owner_user_id, english, translation, topic, example, created_at, updated_at)
+                VALUES (?, ?, '', NULL, NULL, ?, ?)
+                """,
+                (owner_id, word, now, now),
+            )
+            word_id = int(cursor.lastrowid)
+            created_word_ids.append(word_id)
+            self.execute(
+                """
+                INSERT INTO lesson_words (lesson_id, word_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (lesson_id, word_id, now),
+            )
+        return self.list_lesson_words(lesson_id)[-len(created_word_ids):]
+
     def add_word_to_lesson(self, lesson_id: int, word_id: int) -> bool:
         cursor = self.execute(
             """
