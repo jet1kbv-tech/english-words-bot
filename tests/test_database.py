@@ -326,6 +326,23 @@ class LessonDatabaseTests(unittest.TestCase):
         words = self.db.list_lesson_words(lesson["id"])
         self.assertEqual([word["text"] for word in words], ["receipt", "worth it", "stale"])
 
+    def test_update_lesson_word_fields_and_clear_value(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 20 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt"], self.teacher["id"])
+        word_id = self.db.list_lesson_words(lesson["id"])[0]["word_id"]
+
+        self.assertTrue(self.db.update_word_translation(lesson["id"], word_id, "чек"))
+        self.assertTrue(self.db.update_word_example(lesson["id"], word_id, "Can I have the receipt, please?"))
+        self.assertTrue(self.db.update_word_topic(lesson["id"], word_id, "Shopping"))
+
+        word = self.db.get_lesson_word(lesson["id"], word_id)
+        self.assertEqual(word["translation"], "чек")
+        self.assertEqual(word["example"], "Can I have the receipt, please?")
+        self.assertEqual(word["topic"], "Shopping")
+
+        self.assertTrue(self.db.update_word_topic(lesson["id"], word_id, None))
+        self.assertIsNone(self.db.get_lesson_word(lesson["id"], word_id)["topic"])
+
     def test_get_lesson_word_requires_matching_lesson_relation(self) -> None:
         food = self.db.create_teacher_lesson("Lesson 20 — Food", self.teacher["id"])
         travel = self.db.create_teacher_lesson("Lesson 21 — Travel", self.teacher["id"])

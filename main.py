@@ -64,7 +64,7 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(delete_word_prompt, pattern=r"^dict_delete_word:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(confirm_delete_word, pattern=r"^confirm_delete_word:\d+:\d+$"))
     application.add_handler(CallbackQueryHandler(dictionary_menu, pattern=r"^dict_menu$"))
-    lesson_pattern = "^(" + "|".join(TEACHER_LESSON_CALLBACK_PREFIXES) + r")\d+$|^" + TEACHER_LESSONS_LIST_CALLBACK + "$"
+    lesson_pattern = "^(" + "|".join(TEACHER_LESSON_CALLBACK_PREFIXES) + r").+$|^" + TEACHER_LESSONS_LIST_CALLBACK + "$"
     application.add_handler(CallbackQueryHandler(handle_teacher_lesson_callback, pattern=lesson_pattern))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_message))
     application.add_error_handler(error_handler)
