@@ -28,14 +28,20 @@
 
 ### 3.1 Главное меню
 
-Главное меню строится в `main_menu_keyboard()` и состоит из 4 рядов:
+Главное меню строится в `main_menu_keyboard()` и состоит из:
 
-1. `➕ Добавить слово` / `📥 Добавить список слов`
-2. `📚 Мой словарь` / `🔄 Обмен словами`
-3. `🎯 Мои карточки` / `🎮 Игра на 10 слов`
-4. `😵 Мои ошибки` / `📊 Прогресс`
+1. `📚 Мои уроки` — отдельной строкой сверху.
+2. `➕ Добавить слово` / `📥 Добавить список слов`
+3. `📚 Мой словарь` / `🔄 Обмен словами`
+4. `🎯 Мои карточки` / `🎮 Игра на 10 слов`
+5. `😵 Мои ошибки` / `📊 Прогресс`
+6. `❓ Помощь`
 
-Все тексты кнопок объявлены константами в `app/keyboards.py`. Роутинг этих кнопок находится в `app/handlers/menu.py`.
+Плюс `🛠 Админ` для `ADMIN` и `↩️ Выйти из режима ученика` в impersonation-режиме.
+
+Все тексты кнопок объявлены константами в `app/keyboards.py`. Роутинг этих кнопок находится в `app/handlers/menu.py`, `app/handlers/student_lessons.py` (`Мои уроки`) и `app/tutorial/tutorial_service.py` (`Помощь`).
+
+`Мои уроки` — дополнительная точка входа к урокам, назначенным учителем; она не заменяет и не скрывает базовый функционал (словарь, карточки, игра, ошибки, обмен), который остаётся основным способом занятий, пока раздел Lessons не умеет запускать реальную тренировку слов урока (см. 3.8 и 8.6.5).
 
 ### 3.2 Меню тренировки с self-check
 
@@ -597,9 +603,7 @@ Lessons do not store `student_id`/`student_username` directly for the new assign
 
 Only one active assignment per lesson is supported now, enforced by a partial unique index on `lesson_students(lesson_id)` where `is_active = 1`, but historical inactive assignments are preserved for audit and future reporting. Assigning a different student deactivates the previous active row with `unassigned_at` and inserts a new active `ASSIGNED` row. Unassigning only deactivates the current row; it does not delete history.
 
-Student interacts with the platform primarily through assigned Lessons.
-
-Legacy dictionary functionality remains available internally but is no longer the primary navigation flow for students.
+Student menu shows `📚 Мои уроки` as an additional entry point on top of the full legacy menu (dictionary, cards, game, mistakes, exchange). Lessons do not replace or hide legacy navigation: the Words stage inside a lesson is currently a placeholder (see 3.8), so legacy practice remains the primary way students actually study until lesson-driven practice is implemented.
 
 ### 3.8 Lesson Runtime Framework
 

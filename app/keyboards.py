@@ -4,8 +4,6 @@ ADD_WORD = "➕ Добавить слово"
 BULK_ADD_WORDS = "📥 Добавить список слов"
 MY_WORDS = "📚 Мой словарь"
 MY_LESSONS = "📚 Мои уроки"
-REVIEW = "🎯 Повторение"
-SETTINGS = "⚙️ Настройки"
 WORD_EXCHANGE = "🔄 Обмен словами"
 MY_CARDS = "🎯 Мои карточки"
 GAME_SESSION = "🎮 Игра на 10 слов"
@@ -45,9 +43,10 @@ ALL_CARDS = WORD_EXCHANGE
 def main_menu_keyboard(include_exit_student_mode: bool = False, include_admin: bool = False) -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(MY_LESSONS)],
-        [KeyboardButton(REVIEW)],
-        [KeyboardButton(PROGRESS)],
-        [KeyboardButton(SETTINGS)],
+        [KeyboardButton(ADD_WORD), KeyboardButton(BULK_ADD_WORDS)],
+        [KeyboardButton(MY_WORDS), KeyboardButton(WORD_EXCHANGE)],
+        [KeyboardButton(MY_CARDS), KeyboardButton(GAME_SESSION)],
+        [KeyboardButton(MY_MISTAKES), KeyboardButton(PROGRESS)],
         [KeyboardButton(HELP)],
     ]
     if include_admin:
