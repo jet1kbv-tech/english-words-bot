@@ -669,6 +669,28 @@ class Database:
             (lesson_id, word_id),
         )
 
+    def list_lesson_training_words(self, lesson_id: int, user_id: int) -> list[sqlite3.Row]:
+        """Words of a lesson with the given student's progress, for practice.
+
+        Lesson words are owned by the teacher, so this joins on lesson_words
+        instead of owner and left-joins the student's own word_progress.
+        """
+        return self.fetchall(
+            """
+            SELECT words.*, users.display_name AS owner_name,
+                   word_progress.score AS progress_score,
+                   word_progress.times_remembered AS times_remembered,
+                   word_progress.times_forgotten AS times_forgotten
+            FROM lesson_words
+            JOIN words ON words.id = lesson_words.word_id
+            JOIN users ON users.id = words.owner_user_id
+            LEFT JOIN word_progress ON word_progress.word_id = words.id AND word_progress.user_id = ?
+            WHERE lesson_words.lesson_id = ?
+            ORDER BY lesson_words.id ASC
+            """,
+            (user_id, lesson_id),
+        )
+
     def add_lesson_words(self, lesson_id: int, words: list[str], owner_user_id: int | None = None) -> list[sqlite3.Row]:
         lesson = self.get_lesson(lesson_id)
         if lesson is None:
