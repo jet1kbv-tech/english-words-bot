@@ -393,6 +393,48 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertEqual(task["metadata_json"], '{"source":"manual"}')
         self.assertEqual(task["order_index"], 2)
 
+    def test_list_homework_tasks_orders_by_order_index(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 22 — Food", self.teacher["id"])
+        self.db.add_homework_task(lesson["id"], "free", "Second", order_index=1)
+        self.db.add_homework_task(lesson["id"], "free", "First", order_index=0)
+
+        other = self.db.create_teacher_lesson("Lesson 23 — Travel", self.teacher["id"])
+        self.db.add_homework_task(other["id"], "free", "Other lesson task")
+
+        tasks = self.db.list_homework_tasks(lesson["id"])
+
+        self.assertEqual([task["prompt"] for task in tasks], ["First", "Second"])
+
+    def test_get_homework_task_requires_matching_lesson(self) -> None:
+        food = self.db.create_teacher_lesson("Lesson 24 — Food", self.teacher["id"])
+        travel = self.db.create_teacher_lesson("Lesson 25 — Travel", self.teacher["id"])
+        task = self.db.add_homework_task(food["id"], "free", "Write something")
+
+        self.assertIsNotNone(self.db.get_homework_task(food["id"], task["id"]))
+        self.assertIsNone(self.db.get_homework_task(travel["id"], task["id"]))
+
+    def test_delete_homework_task_removes_task_and_answers(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 26 — Food", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+        self.db.execute(
+            "INSERT INTO homework_answers (task_id, user_id, answer, created_at) VALUES (?, ?, ?, ?)",
+            (task["id"], self.student["id"], "my answer", "2026-01-01T00:00:00"),
+        )
+
+        deleted = self.db.delete_homework_task(lesson["id"], task["id"])
+
+        self.assertTrue(deleted)
+        self.assertIsNone(self.db.get_homework_task(lesson["id"], task["id"]))
+        self.assertEqual(self.db.fetchall("SELECT * FROM homework_answers WHERE task_id = ?", (task["id"],)), [])
+
+    def test_delete_homework_task_returns_false_for_wrong_lesson(self) -> None:
+        food = self.db.create_teacher_lesson("Lesson 27 — Food", self.teacher["id"])
+        travel = self.db.create_teacher_lesson("Lesson 28 — Travel", self.teacher["id"])
+        task = self.db.add_homework_task(food["id"], "free", "Write something")
+
+        self.assertFalse(self.db.delete_homework_task(travel["id"], task["id"]))
+        self.assertIsNotNone(self.db.get_homework_task(food["id"], task["id"]))
+
 
 class TeacherLessonListTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -524,3 +566,85 @@ class LessonAssignmentDatabaseTests(unittest.TestCase):
         columns = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lessons)")}
         self.assertNotIn("student_username", columns)
         self.assertNotIn("student_id", columns)
+
+
+class LessonServiceHomeworkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from app.lesson_repository import LessonRepository
+        from app.lesson_service import LessonService
+
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.teacher = self.db.upsert_user(40, "teacher", "Teacher")
+        self.lesson = self.db.create_teacher_lesson("Lesson 50 — Food", self.teacher["id"])
+        self.service = LessonService(LessonRepository(self.db))
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_add_translation_task_trims_and_orders(self) -> None:
+        from app.lesson_service import HOMEWORK_TASK_TYPE_TRANSLATION
+
+        first = self.service.add_translation_task(self.lesson["id"], "  receipt  ", "  чек  ")
+        second = self.service.add_translation_task(self.lesson["id"], "worth it")
+
+        self.assertEqual(first["task_type"], HOMEWORK_TASK_TYPE_TRANSLATION)
+        self.assertEqual(first["prompt"], "receipt")
+        self.assertEqual(first["expected_answer"], "чек")
+        self.assertEqual(first["order_index"], 0)
+        self.assertEqual(second["order_index"], 1)
+        self.assertIsNone(second["expected_answer"])
+
+    def test_add_translation_task_rejects_empty_prompt(self) -> None:
+        from app.lesson_service import HomeworkTaskError
+
+        with self.assertRaises(HomeworkTaskError):
+            self.service.add_translation_task(self.lesson["id"], "   ")
+
+    def test_add_translation_task_rejects_too_long_prompt(self) -> None:
+        from app.lesson_service import HomeworkTaskError, MAX_HOMEWORK_PROMPT_LENGTH
+
+        with self.assertRaises(HomeworkTaskError):
+            self.service.add_translation_task(self.lesson["id"], "x" * (MAX_HOMEWORK_PROMPT_LENGTH + 1))
+
+    def test_add_free_task_stores_prompt_only(self) -> None:
+        from app.lesson_service import HOMEWORK_TASK_TYPE_FREE
+
+        task = self.service.add_free_task(self.lesson["id"], "Write two sentences")
+
+        self.assertEqual(task["task_type"], HOMEWORK_TASK_TYPE_FREE)
+        self.assertIsNone(task["expected_answer"])
+        self.assertIsNone(task["metadata_json"])
+
+    def test_add_quiz_task_stores_options_and_correct_index(self) -> None:
+        import json
+        from app.lesson_service import HOMEWORK_TASK_TYPE_QUIZ
+
+        task = self.service.add_quiz_task(self.lesson["id"], "Pick one", ["receipt", "recipe", ""], correct_index=0)
+
+        self.assertEqual(task["task_type"], HOMEWORK_TASK_TYPE_QUIZ)
+        self.assertEqual(task["expected_answer"], "receipt")
+        metadata = json.loads(task["metadata_json"])
+        # Blank lines are dropped before validating/storing options.
+        self.assertEqual(metadata["options"], ["receipt", "recipe"])
+        self.assertEqual(metadata["correct_index"], 0)
+
+    def test_add_quiz_task_rejects_too_few_options(self) -> None:
+        from app.lesson_service import HomeworkTaskError
+
+        with self.assertRaises(HomeworkTaskError):
+            self.service.add_quiz_task(self.lesson["id"], "Pick one", ["only"], correct_index=0)
+
+    def test_add_quiz_task_rejects_too_many_options(self) -> None:
+        from app.lesson_service import HomeworkTaskError, MAX_QUIZ_OPTIONS
+
+        with self.assertRaises(HomeworkTaskError):
+            self.service.add_quiz_task(self.lesson["id"], "Pick one", [f"opt{i}" for i in range(MAX_QUIZ_OPTIONS + 1)], correct_index=0)
+
+    def test_add_quiz_task_rejects_out_of_range_correct_index(self) -> None:
+        from app.lesson_service import HomeworkTaskError
+
+        with self.assertRaises(HomeworkTaskError):
+            self.service.add_quiz_task(self.lesson["id"], "Pick one", ["a", "b"], correct_index=5)

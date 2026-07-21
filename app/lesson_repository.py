@@ -34,6 +34,26 @@ class LessonRepository:
     def list_lesson_training_words(self, lesson_id: int, user_id: int) -> list[sqlite3.Row]:
         return self.db.list_lesson_training_words(lesson_id, user_id)
 
+    def list_homework_tasks(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.db.list_homework_tasks(lesson_id)
+
+    def get_homework_task(self, lesson_id: int, task_id: int) -> sqlite3.Row | None:
+        return self.db.get_homework_task(lesson_id, task_id)
+
+    def delete_homework_task(self, lesson_id: int, task_id: int) -> bool:
+        return self.db.delete_homework_task(lesson_id, task_id)
+
+    def add_homework_task(
+        self,
+        lesson_id: int,
+        task_type: str,
+        prompt: str,
+        expected_answer: str | None = None,
+        metadata_json: str | None = None,
+        order_index: int = 0,
+    ) -> sqlite3.Row:
+        return self.db.add_homework_task(lesson_id, task_type, prompt, expected_answer, metadata_json, order_index)
+
     def add_lesson_words(self, lesson_id: int, words: list[str], owner_user_id: int | None = None) -> list[sqlite3.Row]:
         return self.db.add_lesson_words(lesson_id, words, owner_user_id)
 

@@ -752,6 +752,28 @@ class Database:
             raise RuntimeError("Failed to create homework task")
         return task
 
+    def list_homework_tasks(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM homework_tasks WHERE lesson_id = ? ORDER BY order_index ASC, id ASC",
+            (lesson_id,),
+        )
+
+    def get_homework_task(self, lesson_id: int, task_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM homework_tasks WHERE id = ? AND lesson_id = ?",
+            (task_id, lesson_id),
+        )
+
+    def delete_homework_task(self, lesson_id: int, task_id: int) -> bool:
+        if self.get_homework_task(lesson_id, task_id) is None:
+            return False
+        self.execute("DELETE FROM homework_answers WHERE task_id = ?", (task_id,))
+        cursor = self.execute(
+            "DELETE FROM homework_tasks WHERE id = ? AND lesson_id = ?",
+            (task_id, lesson_id),
+        )
+        return cursor.rowcount > 0
+
     def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
         english = english.strip()
         translation = translation.strip()

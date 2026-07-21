@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
@@ -12,7 +14,7 @@ from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON,
 from app.lesson_metadata import lesson_display_name
 from app.notifications.notification_service import NotificationService
 from app.lesson_repository import LessonRepository
-from app.lesson_service import LessonService, LessonWordImportError, normalize_lesson_words_import
+from app.lesson_service import HomeworkTaskError, LessonService, LessonWordImportError, normalize_lesson_words_import
 from app.student_access_service import StudentAccessService
 
 _SELECT_PROGRESS = "teacher_select_progress"
@@ -31,7 +33,15 @@ _PENDING_LESSON_WORDS = "pending_lesson_words"
 _PENDING_AI_TRANSLATION = "pending_ai_translation"
 _PENDING_AI_TRANSLATION_EDIT = "pending_ai_translation_edit"
 _SELECTED_LESSON_WORDS = "selected_lesson_words"
+_CREATE_HOMEWORK_TASK = "teacher_create_homework_task"
+_PENDING_HOMEWORK_TASK = "pending_homework_task"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
+
+HOMEWORK_TASK_TYPE_LABELS = {
+    "translation": "📝 Перевод",
+    "free": "✍️ Свободный ответ",
+    "quiz": "🔘 Тест",
+}
 
 LESSON_BACK_TO_LIST = "⬅️ К списку уроков"
 TEACHER_LESSONS_BACK = "⬅️ Назад"
@@ -60,6 +70,12 @@ TEACHER_LESSON_WORD_OPEN_PREFIX = "teacher:lesson:word:open:"
 TEACHER_LESSON_WORDS_CONFIRM_PREFIX = "teacher:lesson:words:confirm:"
 TEACHER_LESSON_WORDS_CANCEL_PREFIX = "teacher:lesson:words:cancel:"
 TEACHER_LESSON_WORD_EDIT_PREFIX = "teacher:lesson:word:edit:"
+TEACHER_LESSON_HOMEWORK_ADD_PREFIX = "teacher:lesson:homework:add:"
+TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX = "teacher:lesson:homework:add_type:"
+TEACHER_LESSON_HOMEWORK_CANCEL_PREFIX = "teacher:lesson:homework:cancel:"
+TEACHER_LESSON_HOMEWORK_OPEN_PREFIX = "teacher:lesson:homework:open:"
+TEACHER_LESSON_HOMEWORK_DELETE_PREFIX = "teacher:lesson:homework:delete:"
+TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX = "teacher:lesson:homework:delete_confirm:"
 TEACHER_LESSONS_LIST_CALLBACK = "teacher:lessons:list"
 TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_WORDS_PREFIX,
@@ -410,7 +426,6 @@ def _format_lesson_section(summary, section: str) -> str:
         "words": ("📖 Слова", "Этот раздел скоро позволит добавлять и редактировать слова урока."),
         "grammar": ("📝 Грамматика", "Этот раздел скоро позволит добавлять грамматическую тему и объяснения."),
         "exercises": ("✏️ Упражнения", "Этот раздел скоро позволит добавлять упражнения урока."),
-        "homework": ("🏠 Домашнее задание", "Этот раздел скоро позволит собрать домашнее задание по уроку."),
         "ai": ("🤖 AI-помощник", "Скоро здесь можно будет сгенерировать слова, упражнения, домашку и подсказки с помощью AI."),
     }
     title, description = descriptions[section]
@@ -419,6 +434,104 @@ def _format_lesson_section(summary, section: str) -> str:
 
 def _lesson_section_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К уроку", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")]])
+
+
+def _homework_task_label(task) -> str:
+    icon_label = HOMEWORK_TASK_TYPE_LABELS.get(str(task["task_type"]), str(task["task_type"]))
+    prompt = str(task["prompt"])
+    short_prompt = prompt if len(prompt) <= 60 else prompt[:57] + "…"
+    return f"{icon_label}: {short_prompt}"
+
+
+def _format_lesson_homework(summary, tasks: list) -> str:
+    header = ["🏠 Домашнее задание", "", f"Урок: {lesson_display_name(summary)}"]
+    if not tasks:
+        return "\n".join(header + ["", "Пока нет заданий."])
+    lines = [f"{index}. {_homework_task_label(task)}" for index, task in enumerate(tasks, start=1)]
+    return "\n".join(header + [""] + lines)
+
+
+def _lesson_homework_keyboard(lesson_id: int, tasks: list) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(_homework_task_label(task), callback_data=f"{TEACHER_LESSON_HOMEWORK_OPEN_PREFIX}{lesson_id}:{task['id']}")]
+        for task in tasks
+    ]
+    rows.append([InlineKeyboardButton("➕ Добавить задание", callback_data=f"{TEACHER_LESSON_HOMEWORK_ADD_PREFIX}{lesson_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Урок", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _homework_type_picker_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(HOMEWORK_TASK_TYPE_LABELS["translation"], callback_data=f"{TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX}translation:{lesson_id}")],
+        [InlineKeyboardButton(HOMEWORK_TASK_TYPE_LABELS["free"], callback_data=f"{TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX}free:{lesson_id}")],
+        [InlineKeyboardButton(HOMEWORK_TASK_TYPE_LABELS["quiz"], callback_data=f"{TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX}quiz:{lesson_id}")],
+        [InlineKeyboardButton("⬅️ Отмена", callback_data=f"{TEACHER_LESSON_HOMEWORK_CANCEL_PREFIX}{lesson_id}")],
+    ])
+
+
+def _optional_task_value(task, key: str) -> str:
+    value = task[key] if hasattr(task, "keys") and key in task.keys() else None
+    if value is None or str(value).strip() == "":
+        return "—"
+    return str(value)
+
+
+def _format_homework_task_detail(summary, task) -> str:
+    if summary is None or task is None:
+        return "Задание не найдено."
+    task_type = str(task["task_type"])
+    lines = [
+        "🏠 Задание",
+        "",
+        f"Урок: {lesson_display_name(summary)}",
+        f"Тип: {HOMEWORK_TASK_TYPE_LABELS.get(task_type, task_type)}",
+        f"Задание: {task['prompt']}",
+    ]
+    if task_type == "translation":
+        lines.append(f"Эталонный перевод: {_optional_task_value(task, 'expected_answer')}")
+    elif task_type == "quiz":
+        metadata = json.loads(task["metadata_json"]) if task["metadata_json"] else {}
+        options = metadata.get("options", [])
+        correct_index = metadata.get("correct_index")
+        lines.append("Варианты:")
+        for index, option in enumerate(options):
+            mark = "✅" if index == correct_index else "•"
+            lines.append(f"{mark} {option}")
+    return "\n".join(lines)
+
+
+def _homework_task_detail_keyboard(lesson_id: int, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Удалить", callback_data=f"{TEACHER_LESSON_HOMEWORK_DELETE_PREFIX}{lesson_id}:{task_id}")],
+        [InlineKeyboardButton("⬅️ Домашнее задание", callback_data=f"{TEACHER_LESSON_HOMEWORK_PREFIX}{lesson_id}")],
+    ])
+
+
+def _format_homework_delete_confirm(task) -> str:
+    return "\n".join(["Удалить задание?", "", _homework_task_label(task)])
+
+
+def _homework_delete_confirm_keyboard(lesson_id: int, task_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"{TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX}{lesson_id}:{task_id}")],
+        [InlineKeyboardButton("↩️ Отмена", callback_data=f"{TEACHER_LESSON_HOMEWORK_OPEN_PREFIX}{lesson_id}:{task_id}")],
+    ])
+
+
+async def _show_lesson_homework(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int, *, edit: bool = False) -> None:
+    db: Database = context.application.bot_data["db"]
+    service = _lesson_service(db)
+    summary = service.get_lesson_summary(lesson_id)
+    if summary is None:
+        return
+    tasks = service.list_homework_tasks(lesson_id)
+    text = _format_lesson_homework(summary, tasks)
+    markup = _lesson_homework_keyboard(lesson_id, tasks)
+    if edit and update.callback_query is not None:
+        await update.callback_query.edit_message_text(text, reply_markup=markup)
+    elif update.effective_message is not None:
+        await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 async def _show_lessons_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -467,7 +580,7 @@ def _lesson_word_ids_from_callback(data: str) -> tuple[int, int] | None:
     return int(lesson_id_text), int(word_id_text)
 
 
-def _lesson_words_selection_ids_from_callback(data: str, prefix: str) -> tuple[int, int] | None:
+def _two_int_ids_from_callback(data: str, prefix: str) -> tuple[int, int] | None:
     ids_text = data.removeprefix(prefix).strip()
     lesson_id_text, separator, word_id_text = ids_text.partition(":")
     if separator != ":" or not lesson_id_text.isdigit() or not word_id_text.isdigit():
@@ -526,6 +639,83 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             return
         service.unassign_lesson(lesson_id)
         await query.edit_message_text(_format_lesson_detail(summary, None), reply_markup=_lesson_detail_keyboard(lesson_id, None))
+        return
+
+    if data.startswith(TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX):
+        payload = data.removeprefix(TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX)
+        task_type, sep, lesson_id_text = payload.partition(":")
+        if sep != ":" or task_type not in HOMEWORK_TASK_TYPE_LABELS or not lesson_id_text.isdigit():
+            return
+        lesson_id = int(lesson_id_text)
+        summary = service.get_lesson_summary(lesson_id)
+        if summary is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        context.user_data["teacher_action"] = _CREATE_HOMEWORK_TASK
+        context.user_data[_PENDING_HOMEWORK_TASK] = {"lesson_id": lesson_id, "task_type": task_type, "step": "prompt"}
+        prompts = {
+            "translation": "Введите слово или фразу для перевода:",
+            "free": "Введите текст задания:",
+            "quiz": "Введите вопрос:",
+        }
+        await query.edit_message_text(prompts[task_type])
+        return
+
+    if data.startswith(TEACHER_LESSON_HOMEWORK_ADD_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_HOMEWORK_ADD_PREFIX)
+        summary = service.get_lesson_summary(lesson_id) if lesson_id is not None else None
+        if lesson_id is None or summary is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        await query.edit_message_text("Выберите тип задания:", reply_markup=_homework_type_picker_keyboard(lesson_id))
+        return
+
+    if data.startswith(TEACHER_LESSON_HOMEWORK_CANCEL_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_HOMEWORK_CANCEL_PREFIX)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_HOMEWORK_TASK, None)
+        await _show_lesson_homework(update, context, lesson_id, edit=True)
+        return
+
+    if data.startswith(TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX)
+        if ids is None:
+            return
+        lesson_id, task_id = ids
+        if service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        service.delete_homework_task(lesson_id, task_id)
+        await _show_lesson_homework(update, context, lesson_id, edit=True)
+        return
+
+    if data.startswith(TEACHER_LESSON_HOMEWORK_DELETE_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_HOMEWORK_DELETE_PREFIX)
+        if ids is None:
+            return
+        lesson_id, task_id = ids
+        summary = service.get_lesson_summary(lesson_id)
+        task = service.get_homework_task(lesson_id, task_id) if summary is not None else None
+        if summary is None or task is None:
+            await query.edit_message_text("Задание не найдено.")
+            return
+        await query.edit_message_text(_format_homework_delete_confirm(task), reply_markup=_homework_delete_confirm_keyboard(lesson_id, task_id))
+        return
+
+    if data.startswith(TEACHER_LESSON_HOMEWORK_OPEN_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_HOMEWORK_OPEN_PREFIX)
+        if ids is None:
+            return
+        lesson_id, task_id = ids
+        summary = service.get_lesson_summary(lesson_id)
+        task = service.get_homework_task(lesson_id, task_id) if summary is not None else None
+        if summary is None or task is None:
+            await query.edit_message_text("Задание не найдено.")
+            return
+        await query.edit_message_text(_format_homework_task_detail(summary, task), reply_markup=_homework_task_detail_keyboard(lesson_id, task_id))
         return
 
     if data.startswith(TEACHER_LESSON_WORDS_AI_EDIT_PREFIX):
@@ -645,7 +835,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         await query.edit_message_text(_format_lesson_word_detail(summary, word), reply_markup=_lesson_word_detail_keyboard(lesson_id, word_id))
         return
     if data.startswith(TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX):
-        ids = _lesson_words_selection_ids_from_callback(data, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX)
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX)
         if ids is None:
             return
         lesson_id, word_id = ids
@@ -748,6 +938,9 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         }
         if prefix == TEACHER_LESSON_WORDS_PREFIX:
             await _show_lesson_words(update, context, lesson_id, edit=True)
+            return
+        if prefix == TEACHER_LESSON_HOMEWORK_PREFIX:
+            await _show_lesson_homework(update, context, lesson_id, edit=True)
             return
         await query.edit_message_text(_format_lesson_section(summary, section_by_prefix[prefix]), reply_markup=_lesson_section_keyboard(lesson_id))
         return
@@ -979,6 +1172,77 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         word = _lesson_service(db).get_lesson_word(lesson_id, word_id)
         await update.effective_message.reply_text(_format_lesson_word_detail(summary, word), reply_markup=_lesson_word_detail_keyboard(lesson_id, word_id))
         return True
+    if action == _CREATE_HOMEWORK_TASK:
+        draft = context.user_data.get(_PENDING_HOMEWORK_TASK) or {}
+        lesson_id = int(draft.get("lesson_id") or 0)
+        task_type = str(draft.get("task_type") or "")
+        step = str(draft.get("step") or "")
+        service = _lesson_service(db)
+        if not lesson_id or task_type not in HOMEWORK_TASK_TYPE_LABELS or service.get_lesson_summary(lesson_id) is None:
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_HOMEWORK_TASK, None)
+            return False
+
+        async def _finish(task_creator) -> bool:
+            try:
+                task_creator()
+            except HomeworkTaskError as error:
+                await update.effective_message.reply_text(str(error))
+                return True
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_HOMEWORK_TASK, None)
+            await update.effective_message.reply_text("Задание добавлено ✅")
+            await _show_lesson_homework(update, context, lesson_id)
+            return True
+
+        if task_type == "translation":
+            if step == "prompt":
+                if not text.strip():
+                    await update.effective_message.reply_text("Задание не может быть пустым. Введите слово или фразу для перевода:")
+                    return True
+                draft["prompt"] = text.strip()
+                draft["step"] = "answer"
+                await update.effective_message.reply_text("Введите эталонный перевод, или '-' чтобы бот проверял только через AI:")
+                return True
+            expected = None if text.strip() in {"-", "—"} else text
+            return await _finish(lambda: service.add_translation_task(lesson_id, draft.get("prompt", ""), expected))
+
+        if task_type == "free":
+            return await _finish(lambda: service.add_free_task(lesson_id, text))
+
+        if task_type == "quiz":
+            if step == "prompt":
+                if not text.strip():
+                    await update.effective_message.reply_text("Вопрос не может быть пустым. Введите вопрос:")
+                    return True
+                draft["prompt"] = text.strip()
+                draft["step"] = "options"
+                await update.effective_message.reply_text("Введите варианты ответа, каждый с новой строки (минимум 2, максимум 6):")
+                return True
+            if step == "options":
+                options = [line.strip() for line in text.splitlines() if line.strip()]
+                if len(options) < 2:
+                    await update.effective_message.reply_text("Нужно минимум 2 варианта, каждый с новой строки. Попробуйте ещё раз:")
+                    return True
+                if len(options) > 6:
+                    await update.effective_message.reply_text("Слишком много вариантов: максимум 6. Попробуйте ещё раз:")
+                    return True
+                draft["options"] = options
+                draft["step"] = "correct"
+                option_lines = "\n".join(f"{index}. {option}" for index, option in enumerate(options, start=1))
+                await update.effective_message.reply_text(f"Варианты:\n{option_lines}\n\nВведите номер правильного варианта:")
+                return True
+            options = list(draft.get("options") or [])
+            if not text.strip().isdigit():
+                await update.effective_message.reply_text("Введите число.")
+                return True
+            choice = int(text.strip())
+            if not (1 <= choice <= len(options)):
+                await update.effective_message.reply_text(f"Введите число от 1 до {len(options)}.")
+                return True
+            return await _finish(lambda: service.add_quiz_task(lesson_id, draft.get("prompt", ""), options, choice - 1))
+        return False
+
     if action == _IMPORT_LESSON_WORDS:
         draft = context.user_data.get(_PENDING_LESSON_WORDS) or {}
         lesson_id = int(draft.get("lesson_id") or context.user_data.get("current_teacher_lesson_id") or 0)
