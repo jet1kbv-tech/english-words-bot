@@ -48,7 +48,7 @@ def _student_lessons_keyboard(lessons: list) -> InlineKeyboardMarkup:
 
 def _format_student_lesson_overview(summary) -> str:
     return "\n".join([
-        "📚 Lesson",
+        "📚 Урок",
         "",
         lesson_display_name(summary),
         "",
@@ -58,15 +58,15 @@ def _format_student_lesson_overview(summary) -> str:
         "",
         "Прогресс урока",
         "",
-        "🟢 Words",
-        "⚪ Grammar",
-        "⚪ Exercises",
-        "⚪ Homework",
+        "🟢 Слова",
+        "⚪ Грамматика",
+        "⚪ Упражнения",
+        "⚪ Домашнее задание",
         "",
-        f"Words: {_count(summary, 'words_count')}",
-        f"Grammar: {_count(summary, 'grammar_count')}",
-        f"Exercises: {_count(summary, 'exercises_count')}",
-        f"Homework: {_count(summary, 'homework_count')}",
+        f"Слова: {_count(summary, 'words_count')}",
+        f"Грамматика: {_count(summary, 'grammar_count')}",
+        f"Упражнения: {_count(summary, 'exercises_count')}",
+        f"Домашнее задание: {_count(summary, 'homework_count')}",
     ])
 
 
@@ -85,23 +85,23 @@ def _start_section_keyboard(lesson_id: int, section: LessonSection) -> InlineKey
     open_callback = f"{STUDENT_LESSON_WORDS_PREFIX}{lesson_id}" if section is LessonSection.WORDS else f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("▶ Открыть", callback_data=open_callback)],
-        [InlineKeyboardButton("⬅️ Lesson", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
     ])
 
 
 def _lesson_back_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Lesson", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")]])
 
 
 def _format_next_section(summary, section: LessonSection) -> str:
     if section is LessonSection.WORDS:
-        return "\n".join(["Следующий этап", "", "📖 Words", "", f"{_count(summary, 'words_count')} слова"])
+        return "\n".join(["Следующий этап", "", "📖 Слова", "", f"{_count(summary, 'words_count')} слова"])
     return "Следующий этап будет добавлен позже."
 
 
 def _format_words_stage(summary) -> str:
     return "\n".join([
-        "📖 Words",
+        "📖 Слова",
         "",
         "В этом уроке:",
         "",

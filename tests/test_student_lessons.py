@@ -103,25 +103,25 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Lesson 15 — Food", text)
         self.assertIn("Не начат", text)
         self.assertIn("Прогресс урока", text)
-        self.assertIn("🟢 Words", text)
-        self.assertIn("⚪ Grammar", text)
-        self.assertIn("⚪ Exercises", text)
-        self.assertIn("⚪ Homework", text)
-        self.assertIn("Words: 3", text)
-        self.assertIn("Homework: 1", text)
+        self.assertIn("🟢 Слова", text)
+        self.assertIn("⚪ Грамматика", text)
+        self.assertIn("⚪ Упражнения", text)
+        self.assertIn("⚪ Домашнее задание", text)
+        self.assertIn("Слова: 3", text)
+        self.assertIn("Домашнее задание: 1", text)
 
         start = self._callback_update(f"{STUDENT_LESSON_START_PREFIX}{lesson['id']}")
         await handle_student_lesson_callback(start, self.context)
         start_text, start_keyboard = start.callback_query.edits[-1]
         self.assertIn("Следующий этап", start_text)
-        self.assertIn("📖 Words", start_text)
+        self.assertIn("📖 Слова", start_text)
         self.assertIn("3 слова", start_text)
-        self.assertEqual([b.text for row in start_keyboard.inline_keyboard for b in row], ["▶ Открыть", "⬅️ Lesson"])
+        self.assertEqual([b.text for row in start_keyboard.inline_keyboard for b in row], ["▶ Открыть", "⬅️ Урок"])
 
         words = self._callback_update(f"{STUDENT_LESSON_WORDS_PREFIX}{lesson['id']}")
         await handle_student_lesson_callback(words, self.context)
         words_text = words.callback_query.edits[-1][0]
-        self.assertIn("📖 Words", words_text)
+        self.assertIn("📖 Слова", words_text)
         self.assertIn("В этом уроке:", words_text)
         self.assertIn("3 слова", words_text)
         self.assertIn("Прохождение слов будет добавлено в следующем обновлении.", words_text)
@@ -157,7 +157,7 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_teacher_menu_unaffected_and_teacher_not_student_handler(self):
         self.assertIn(TEACHER_LESSONS, [b.text for row in teacher_menu_keyboard().keyboard for b in row])
-        self.assertIn("📚 Lessons", _format_lessons_screen([]))
+        self.assertIn("📚 Уроки", _format_lessons_screen([]))
         update = self._message_update(username="teacher", user_id=1)
         self.assertFalse(await handle_student_lesson_message(update, self.context))
 
