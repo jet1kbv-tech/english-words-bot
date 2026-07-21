@@ -6,6 +6,7 @@ from telegram.ext import ContextTypes
 from app.auth.roles import Role, RoleResolver
 from app.database import Database
 from app.handlers.start import require_user
+from app.handlers.training import start_lesson_words_practice
 from app.keyboards import MY_LESSONS, main_menu_keyboard
 from app.lesson_metadata import lesson_display_name
 from app.lesson_repository import LessonRepository
@@ -14,11 +15,15 @@ from app.lesson_runtime import LessonRuntimeService, LessonSection
 STUDENT_LESSONS_LIST_CALLBACK = "student:lessons:list"
 STUDENT_LESSON_OPEN_PREFIX = "student:lesson:open:"
 STUDENT_LESSON_START_PREFIX = "student:lesson:start:"
+STUDENT_LESSON_WORDS_CARDS_PREFIX = "student:lesson:words:cards:"
+STUDENT_LESSON_WORDS_TYPE_PREFIX = "student:lesson:words:type:"
 STUDENT_LESSON_WORDS_PREFIX = "student:lesson:words:"
 STUDENT_LESSON_CALLBACK_PREFIXES = (
     STUDENT_LESSONS_LIST_CALLBACK,
     STUDENT_LESSON_OPEN_PREFIX,
     STUDENT_LESSON_START_PREFIX,
+    STUDENT_LESSON_WORDS_CARDS_PREFIX,
+    STUDENT_LESSON_WORDS_TYPE_PREFIX,
     STUDENT_LESSON_WORDS_PREFIX,
 )
 
@@ -100,14 +105,28 @@ def _format_next_section(summary, section: LessonSection) -> str:
 
 
 def _format_words_stage(summary) -> str:
+    words_count = _count(summary, "words_count")
+    if words_count == 0:
+        return "\n".join(["📖 Слова", "", "В этом уроке пока нет слов.", "", "Попросите преподавателя добавить слова."])
     return "\n".join([
         "📖 Слова",
         "",
-        "В этом уроке:",
+        f"Слов в уроке: {words_count}",
         "",
-        f"{_count(summary, 'words_count')} слова",
+        "Выберите режим прохождения:",
         "",
-        "Прохождение слов будет добавлено в следующем обновлении.",
+        "🃏 Карточки — вспоминаешь и отмечаешь Помню / Не помню.",
+        "✍️ Ввод — пишешь ответ в чат, бот проверяет.",
+    ])
+
+
+def _words_stage_keyboard(lesson_id: int, has_words: bool) -> InlineKeyboardMarkup:
+    if not has_words:
+        return _lesson_back_keyboard(lesson_id)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🃏 Карточки", callback_data=f"{STUDENT_LESSON_WORDS_CARDS_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("✍️ Ввод", callback_data=f"{STUDENT_LESSON_WORDS_TYPE_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
     ])
 
 
@@ -184,6 +203,21 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
             return
         await query.edit_message_text(_format_next_section(summary, section), reply_markup=_start_section_keyboard(lesson_id, section))
         return
+    for mode_prefix, typed in ((STUDENT_LESSON_WORDS_CARDS_PREFIX, False), (STUDENT_LESSON_WORDS_TYPE_PREFIX, True)):
+        if not data.startswith(mode_prefix):
+            continue
+        lesson_id_text = data.removeprefix(mode_prefix)
+        lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
+        summary = repo.get_student_lesson(lesson_id, user["username"]) if lesson_id > 0 else None
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        words = repo.list_lesson_training_words(lesson_id, int(user["id"]))
+        if not words:
+            await query.edit_message_text(_format_words_stage(summary), reply_markup=_words_stage_keyboard(lesson_id, has_words=False))
+            return
+        await start_lesson_words_practice(update, context, words, typed=typed)
+        return
     if data.startswith(STUDENT_LESSON_WORDS_PREFIX):
         lesson_id_text = data.removeprefix(STUDENT_LESSON_WORDS_PREFIX)
         lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
@@ -191,4 +225,5 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
         if summary is None:
             await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
             return
-        await query.edit_message_text(_format_words_stage(summary), reply_markup=_lesson_back_keyboard(lesson_id))
+        has_words = _count(summary, "words_count") > 0
+        await query.edit_message_text(_format_words_stage(summary), reply_markup=_words_stage_keyboard(lesson_id, has_words=has_words))

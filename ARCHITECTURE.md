@@ -603,7 +603,7 @@ Lessons do not store `student_id`/`student_username` directly for the new assign
 
 Only one active assignment per lesson is supported now, enforced by a partial unique index on `lesson_students(lesson_id)` where `is_active = 1`, but historical inactive assignments are preserved for audit and future reporting. Assigning a different student deactivates the previous active row with `unassigned_at` and inserts a new active `ASSIGNED` row. Unassigning only deactivates the current row; it does not delete history.
 
-Student menu shows `📚 Мои уроки` as an additional entry point on top of the full legacy menu (dictionary, cards, game, mistakes, exchange). Lessons do not replace or hide legacy navigation: the Words stage inside a lesson is currently a placeholder (see 3.8), so legacy practice remains the primary way students actually study until lesson-driven practice is implemented.
+Student menu shows `📚 Мои уроки` as an additional entry point on top of the full legacy menu (dictionary, cards, game, mistakes, exchange). Lessons do not replace or hide legacy navigation: legacy practice remains available regardless of lesson progress.
 
 ### 3.8 Lesson Runtime Framework
 
@@ -612,6 +612,17 @@ Lesson Runtime determines the next section independently of Telegram handlers.
 Future lesson flow is driven by Runtime rather than hardcoded navigation.
 
 `app/lesson_runtime.py` owns the section enum and `LessonRuntimeService.get_next_section(lesson_id, student_username)`. The student Lesson Overview handler asks this service for the next stage when a student presses `▶ Начать урок`; handlers only render the returned stage and protect access through the existing lesson assignment lookup. The initial runtime always returns `WORDS` for an assigned student and leaves `GRAMMAR`, `EXERCISES`, `HOMEWORK`, and `FINISHED` as future runtime states without adding new database tables.
+
+#### Words stage practice (Phase 4, step 1)
+
+The `📖 Слова` stage inside a lesson is no longer a placeholder: if the lesson has words, the student picks a mode —
+
+- `🃏 Карточки` (`STUDENT_LESSON_WORDS_CARDS_PREFIX`) — same self-check flow as `🎯 Мои карточки` (weighted order, `Показать ответ` / `Помню` / `Не помню`), no study session recorded.
+- `✍️ Ввод` (`STUDENT_LESSON_WORDS_TYPE_PREFIX`) — same typed-answer flow as `🎮 Игра на 10 слов` (AI check with fallback, `study_sessions` + `daily_activity` + XP recorded on finish).
+
+Both reuse `app/handlers/training.py`'s existing card engine via `start_lesson_words_practice(update, context, words, typed=...)`, which seeds `context.user_data["training"]` and calls `send_current_card`. Unlike `🎮 Игра на 10 слов`, the practiced words are not a 10-word sample: **all** of the lesson's words are included (`Database.list_lesson_training_words(lesson_id, user_id)` — lesson words joined with the student's own `word_progress`, since lesson words are owned by the teacher, not the student). Progress is written under the practicing student's `user_id`, same `word_progress` table as free-form practice — a lesson word a student has already met through `🎯 Мои карточки`/`🎮 Игра` (e.g. copied into their own dictionary earlier) keeps a single shared progress row, it is not tracked per-lesson.
+
+If a lesson has no words yet, the stage shows a message asking the student to wait for the teacher instead of the mode picker.
 
 ## Tutorial / Help / Notifications Foundation
 

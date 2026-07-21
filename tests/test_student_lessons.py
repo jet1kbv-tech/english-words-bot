@@ -8,7 +8,9 @@ from app.database import Database
 from app.handlers.student_lessons import (
     STUDENT_LESSON_OPEN_PREFIX,
     STUDENT_LESSON_START_PREFIX,
+    STUDENT_LESSON_WORDS_CARDS_PREFIX,
     STUDENT_LESSON_WORDS_PREFIX,
+    STUDENT_LESSON_WORDS_TYPE_PREFIX,
     handle_student_lesson_callback,
     handle_student_lesson_message,
 )
@@ -120,11 +122,66 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
 
         words = self._callback_update(f"{STUDENT_LESSON_WORDS_PREFIX}{lesson['id']}")
         await handle_student_lesson_callback(words, self.context)
-        words_text = words.callback_query.edits[-1][0]
+        words_text, words_keyboard = words.callback_query.edits[-1]
         self.assertIn("📖 Слова", words_text)
-        self.assertIn("В этом уроке:", words_text)
-        self.assertIn("3 слова", words_text)
-        self.assertIn("Прохождение слов будет добавлено в следующем обновлении.", words_text)
+        self.assertIn("Слов в уроке: 3", words_text)
+        self.assertIn("Выберите режим", words_text)
+        self.assertEqual([b.text for row in words_keyboard.inline_keyboard for b in row], ["🃏 Карточки", "✍️ Ввод", "⬅️ Урок"])
+
+    async def test_student_starts_lesson_words_cards_practice(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["apple", "pear", "bread"], self.teacher["id"])
+
+        update = self._callback_update(f"{STUDENT_LESSON_WORDS_CARDS_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+
+        session = self.context.user_data.get("training")
+        self.assertIsNotNone(session)
+        self.assertFalse(session["game"])
+        self.assertEqual(len(session["words"]), 3)
+        self.assertEqual(session["index"], 0)
+        replies = "\n".join(reply for reply, _ in update.effective_message.replies)
+        self.assertIn("Слова урока", replies)
+        self.assertIn("Карточка 1/3", replies)
+
+    async def test_student_starts_lesson_words_typed_practice(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["apple", "pear"], self.teacher["id"])
+
+        update = self._callback_update(f"{STUDENT_LESSON_WORDS_TYPE_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+
+        session = self.context.user_data.get("training")
+        self.assertIsNotNone(session)
+        self.assertTrue(session["game"])
+        self.assertIsNotNone(session.get("session_id"))
+        self.assertEqual(len(session["words"]), 2)
+        replies = "\n".join(reply for reply, _ in update.effective_message.replies)
+        self.assertIn("пиши ответы в чат", replies)
+        self.assertIn("Напиши ответ в чат", replies)
+
+    async def test_lesson_words_practice_empty_lesson_shows_message(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+
+        update = self._callback_update(f"{STUDENT_LESSON_WORDS_CARDS_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+
+        self.assertIsNone(self.context.user_data.get("training"))
+        self.assertIn("пока нет слов", update.callback_query.edits[-1][0])
+
+    async def test_student_cannot_start_practice_for_unassigned_lesson(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "other", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["apple"], self.teacher["id"])
+
+        update = self._callback_update(f"{STUDENT_LESSON_WORDS_TYPE_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+
+        self.assertIsNone(self.context.user_data.get("training"))
+        self.assertEqual(update.callback_query.edits[-1][0], "Урок недоступен.")
 
     def test_runtime_returns_words_for_assigned_student(self):
         lesson = self._lesson("Lesson 15 — Food")

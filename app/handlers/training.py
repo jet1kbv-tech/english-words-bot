@@ -233,6 +233,37 @@ async def start_game_session(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await send_current_card(update, context)
 
 
+async def start_lesson_words_practice(update: Update, context: ContextTypes.DEFAULT_TYPE, words: list, *, typed: bool) -> None:
+    """Practice a lesson's words in the current session, reusing the card flow.
+
+    `typed=True` mirrors the game (written answers, study session, XP); otherwise
+    it works like personal flashcards (self-check). `words` is a pre-loaded list of
+    lesson words with the student's progress, so all lesson words are practised
+    (not a 10-word sample).
+    """
+    user = await require_user(update, context)
+    if user is None or update.effective_message is None:
+        return
+    ordered = _weighted_word_order(list(words))
+    session: dict = {
+        "words": ordered,
+        "directions": [random.choice(CARD_DIRECTIONS) for _ in ordered],
+        "index": 0,
+        "exchange": False,
+        "game": typed,
+    }
+    if typed:
+        db: Database = context.application.bot_data["db"]
+        session["session_id"] = db.start_study_session(user["id"], len(ordered))
+        session.update({"known": 0, "unknown": 0, "remembered_count": 0, "forgotten_count": 0, "skipped": 0, "xp_earned": 0})
+        context.user_data["training"] = session
+        await update.effective_message.reply_text("📖 Слова урока: пиши ответы в чат!", reply_markup=text_input_keyboard())
+    else:
+        context.user_data["training"] = session
+        await update.effective_message.reply_text("📖 Слова урока: отмечай Помню / Не помню.")
+    await send_current_card(update, context)
+
+
 async def start_mistakes_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await require_user(update, context)
     if user is None or update.effective_message is None:

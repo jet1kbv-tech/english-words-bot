@@ -355,6 +355,25 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertEqual(word["english"], "receipt")
         self.assertIsNone(self.db.get_lesson_word(travel["id"], word_id))
 
+    def test_list_lesson_training_words_includes_student_progress(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 20 — Food", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["receipt", "worth it"], self.teacher["id"])
+        word_ids = [row["word_id"] for row in self.db.list_lesson_words(lesson["id"])]
+        # Student builds progress on the first (teacher-owned) lesson word.
+        self.db.update_progress(self.student["id"], word_ids[0], remembered=True)
+
+        rows = self.db.list_lesson_training_words(lesson["id"], self.student["id"])
+
+        self.assertEqual([row["english"] for row in rows], ["receipt", "worth it"])
+        by_id = {row["id"]: row for row in rows}
+        self.assertEqual(by_id[word_ids[0]]["progress_score"], 1)
+        self.assertEqual(by_id[word_ids[0]]["times_remembered"], 1)
+        # A word the student has not practised has no progress row yet.
+        self.assertIsNone(by_id[word_ids[1]]["progress_score"])
+        # Another lesson's words are not included.
+        other = self.db.create_teacher_lesson("Lesson 21 — Travel", self.teacher["id"])
+        self.assertEqual(self.db.list_lesson_training_words(other["id"], self.student["id"]), [])
+
     def test_add_homework_task_creates_task(self) -> None:
         lesson = self.db.create_lesson(self.student["id"], self.teacher["id"], "Homework")
 
