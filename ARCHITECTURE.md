@@ -456,23 +456,33 @@ Constraint: `UNIQUE(lesson_id, word_id)`, поэтому повторное до
 
 ### 8.6.3 `homework_tasks`
 
-Задания к уроку. На этом этапе задания создаются только database method; UI, menu entry и AI-генерация не добавлены.
+Задания к уроку. Teacher UI (Phase 4, step 2) умеет создавать, просматривать и удалять задания трёх типов; AI-генерация заданий не добавлена.
 
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | INTEGER PK AUTOINCREMENT | task id |
 | `lesson_id` | INTEGER NOT NULL | lesson id |
-| `task_type` | TEXT NOT NULL | тип задания для будущего handler layer |
-| `prompt` | TEXT NOT NULL | текст задания |
-| `expected_answer` | TEXT | optional expected answer |
-| `metadata_json` | TEXT | optional JSON metadata as text |
-| `order_index` | INTEGER NOT NULL DEFAULT 0 | ручная сортировка заданий |
+| `task_type` | TEXT NOT NULL | `translation` \| `free` \| `quiz` |
+| `prompt` | TEXT NOT NULL | текст задания / вопрос |
+| `expected_answer` | TEXT | для `translation` — опциональный эталонный перевод; для `quiz` — текст правильного варианта; для `free` не используется |
+| `metadata_json` | TEXT | только для `quiz`: `{"options": [...], "correct_index": N}` |
+| `order_index` | INTEGER NOT NULL DEFAULT 0 | порядок в списке урока, назначается автоматически при создании (`Database.list_homework_tasks()` + 1) |
 | `created_at` | TEXT NOT NULL | UTC ISO string |
 | `updated_at` | TEXT NOT NULL | UTC ISO string |
 
+Типы заданий (`app/lesson_service.py`):
+
+- **`translation`** — учитель задаёт слово/фразу и опционально эталонный перевод; проверка ответа ученика в будущем шаге (4.2b) будет использовать тот же AI+fallback механизм, что и `🎮 Игра на 10 слов`.
+- **`free`** — открытый вопрос без автопроверки; предполагается ручная проверка учителем в 4.2c (`is_correct`/`feedback` в `homework_answers`).
+- **`quiz`** — вопрос с 2–6 вариантами ответа; варианты и индекс правильного хранятся в `metadata_json`, `expected_answer` дублирует текст правильного варианта для удобства отображения.
+
+Teacher UI: `🏠 Домашнее задание` внутри урока показывает список заданий (`TEACHER_LESSON_HOMEWORK_PREFIX`), `➕ Добавить задание` → выбор типа (`TEACHER_LESSON_HOMEWORK_ADD_PREFIX` / `_ADD_TYPE_PREFIX`) → многошаговый текстовый ввод через `context.user_data["teacher_action"] = "teacher_create_homework_task"` и `_PENDING_HOMEWORK_TASK` (аналогично flow создания урока/импорта слов). Просмотр задания (`_OPEN_PREFIX`) → `🗑 Удалить` с подтверждением (`_DELETE_PREFIX` → `_DELETE_CONFIRM_PREFIX`), симметрично удалению слов словаря. Удаление задания каскадно удаляет связанные `homework_answers`.
+
+Редактирование уже созданного задания (кроме удаления) в этом шаге не добавлено — только создание, просмотр, удаление.
+
 ### 8.6.4 `homework_answers`
 
-Будущие ответы учеников на задания. Таблица есть в schema foundation, но текущий flow её не использует.
+Будущие ответы учеников на задания (Phase 4, step 3). Таблица есть в schema foundation, но текущий flow её ещё не использует — она затрагивается только каскадным удалением при `delete_homework_task()`.
 
 | Column | Type | Notes |
 | --- | --- | --- |
