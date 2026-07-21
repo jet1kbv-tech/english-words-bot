@@ -141,3 +141,18 @@ class LessonService:
         metadata_json = json.dumps({"options": cleaned, "correct_index": correct_index}, ensure_ascii=False)
         order_index = self._next_homework_order_index(lesson_id)
         return self.repository.add_homework_task(lesson_id, HOMEWORK_TASK_TYPE_QUIZ, prompt, cleaned[correct_index], metadata_json, order_index)
+
+    def list_latest_homework_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
+        return self.repository.list_latest_homework_answers(lesson_id, user_id)
+
+    def submit_homework_answer(
+        self, lesson_id: int, task_id: int, user_id: int, answer: str, is_correct: bool | None = None, feedback: str | None = None
+    ) -> sqlite3.Row:
+        if self.repository.get_homework_task(lesson_id, task_id) is None:
+            raise ValueError("homework task not found")
+        answer = answer.strip()
+        if not answer:
+            raise HomeworkTaskError("Ответ не может быть пустым.")
+        if len(answer) > MAX_HOMEWORK_ANSWER_LENGTH:
+            raise HomeworkTaskError(f"Слишком длинный ответ: максимум {MAX_HOMEWORK_ANSWER_LENGTH} символов.")
+        return self.repository.submit_homework_answer(task_id, user_id, answer, is_correct, feedback)

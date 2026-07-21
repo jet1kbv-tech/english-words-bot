@@ -43,6 +43,14 @@ class LessonRepository:
     def delete_homework_task(self, lesson_id: int, task_id: int) -> bool:
         return self.db.delete_homework_task(lesson_id, task_id)
 
+    def submit_homework_answer(
+        self, task_id: int, user_id: int, answer: str, is_correct: bool | None = None, feedback: str | None = None
+    ) -> sqlite3.Row:
+        return self.db.submit_homework_answer(task_id, user_id, answer, is_correct, feedback)
+
+    def list_latest_homework_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
+        return self.db.list_latest_homework_answers(lesson_id, user_id)
+
     def add_homework_task(
         self,
         lesson_id: int,

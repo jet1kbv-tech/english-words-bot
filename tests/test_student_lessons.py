@@ -2,10 +2,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+import os
 import unittest
+from unittest.mock import patch
 
 from app.database import Database
 from app.handlers.student_lessons import (
+    STUDENT_LESSON_HOMEWORK_PREFIX,
+    STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX,
+    STUDENT_LESSON_HOMEWORK_TASK_PREFIX,
     STUDENT_LESSON_OPEN_PREFIX,
     STUDENT_LESSON_START_PREFIX,
     STUDENT_LESSON_WORDS_CARDS_PREFIX,
@@ -211,6 +216,185 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         missing = self._callback_update(f"{STUDENT_LESSON_OPEN_PREFIX}{lesson['id']}", username="other", user_id=3)
         await handle_student_lesson_callback(missing, self.context)
         self.assertEqual(missing.callback_query.edits[-1][0], "Урок недоступен.")
+
+    async def test_overview_shows_homework_button_only_when_tasks_exist(self):
+        empty_lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(empty_lesson["id"], "student", self.teacher["id"])
+        empty_update = self._callback_update(f"{STUDENT_LESSON_OPEN_PREFIX}{empty_lesson['id']}")
+        await handle_student_lesson_callback(empty_update, self.context)
+        empty_buttons = [b.text for row in empty_update.callback_query.edits[-1][1].inline_keyboard for b in row]
+        self.assertNotIn("🏠 Домашнее задание", empty_buttons)
+
+        lesson = self._lesson("Lesson 16 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        self.db.add_homework_task(lesson["id"], "free", "Write something")
+        update = self._callback_update(f"{STUDENT_LESSON_OPEN_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+        buttons = [b.text for row in update.callback_query.edits[-1][1].inline_keyboard for b in row]
+        self.assertIn("🏠 Домашнее задание", buttons)
+
+    async def test_homework_list_shows_status_icons(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        translation_task = self.db.add_homework_task(lesson["id"], "translation", "receipt", "чек")
+        free_task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+        self.db.submit_homework_answer(translation_task["id"], self.student["id"], "чек", is_correct=True)
+        self.db.submit_homework_answer(free_task["id"], self.student["id"], "my answer")
+
+        update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+
+        text, keyboard = update.callback_query.edits[-1]
+        self.assertIn("✅", text)
+        self.assertIn("⏳", text)
+        buttons = [b.text for row in keyboard.inline_keyboard for b in row]
+        self.assertTrue(any(b.startswith("✅") for b in buttons))
+        self.assertTrue(any(b.startswith("⏳") for b in buttons))
+        self.assertIn("⬅️ Урок", buttons)
+
+    async def test_homework_list_empty_state(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+
+        update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+
+        self.assertIn("Пока нет заданий.", update.callback_query.edits[-1][0])
+
+    async def test_translation_task_correct_answer_via_fallback(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "translation", "receipt", "чек")
+
+        open_update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_TASK_PREFIX}{lesson['id']}:{task['id']}")
+        await handle_student_lesson_callback(open_update, self.context)
+        self.assertIn("receipt", open_update.callback_query.edits[-1][0])
+        self.assertIn("Напишите перевод в чат", open_update.callback_query.edits[-1][0])
+        self.assertEqual(self.context.user_data.get("pending_homework_answer"), {"lesson_id": lesson["id"], "task_id": task["id"], "task_type": "translation"})
+
+        with patch.dict(os.environ, {"AI_PROVIDER": "none"}):
+            answer_update = self._message_update(text="чек")
+            self.assertTrue(await handle_student_lesson_message(answer_update, self.context))
+
+        self.assertIn("✅ Верно!", answer_update.effective_message.replies[-1][0])
+        self.assertIsNone(self.context.user_data.get("pending_homework_answer"))
+        latest = self.db.list_latest_homework_answers(lesson["id"], self.student["id"])
+        self.assertTrue(latest[task["id"]]["is_correct"])
+
+    async def test_translation_task_wrong_answer_shows_expected(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "translation", "receipt", "чек")
+        open_update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_TASK_PREFIX}{lesson['id']}:{task['id']}")
+        await handle_student_lesson_callback(open_update, self.context)
+
+        with patch.dict(os.environ, {"AI_PROVIDER": "none"}):
+            answer_update = self._message_update(text="рецепт")
+            self.assertTrue(await handle_student_lesson_message(answer_update, self.context))
+
+        reply = answer_update.effective_message.replies[-1][0]
+        self.assertIn("❌ Неверно.", reply)
+        self.assertIn("Правильный ответ: чек", reply)
+
+    async def test_translation_task_without_expected_answer_needs_manual_review(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "translation", "worth it")
+        open_update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_TASK_PREFIX}{lesson['id']}:{task['id']}")
+        await handle_student_lesson_callback(open_update, self.context)
+
+        with patch.dict(os.environ, {"AI_PROVIDER": "none"}):
+            answer_update = self._message_update(text="стоит того")
+            self.assertTrue(await handle_student_lesson_message(answer_update, self.context))
+
+        self.assertIn("📤 Ответ отправлен на проверку.", answer_update.effective_message.replies[-1][0])
+        latest = self.db.list_latest_homework_answers(lesson["id"], self.student["id"])
+        self.assertIsNone(latest[task["id"]]["is_correct"])
+
+    async def test_free_task_submission_is_pending_review(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "free", "Write two sentences with receipt")
+        open_update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_TASK_PREFIX}{lesson['id']}:{task['id']}")
+        await handle_student_lesson_callback(open_update, self.context)
+        self.assertIn("Напишите ответ в чат", open_update.callback_query.edits[-1][0])
+
+        answer_update = self._message_update(text="I got the receipt. I kept the receipt.")
+        self.assertTrue(await handle_student_lesson_message(answer_update, self.context))
+
+        self.assertIn("📤 Ответ отправлен на проверку.", answer_update.effective_message.replies[-1][0])
+        latest = self.db.list_latest_homework_answers(lesson["id"], self.student["id"])
+        self.assertEqual(latest[task["id"]]["answer"], "I got the receipt. I kept the receipt.")
+        self.assertIsNone(latest[task["id"]]["is_correct"])
+
+    async def test_quiz_task_shows_options_and_checks_answer(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(
+            lesson["id"], "quiz", "Choose the word",
+            expected_answer="receipt",
+            metadata_json='{"options": ["receipt", "recipe"], "correct_index": 0}',
+        )
+
+        open_update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_TASK_PREFIX}{lesson['id']}:{task['id']}")
+        await handle_student_lesson_callback(open_update, self.context)
+        text, keyboard = open_update.callback_query.edits[-1]
+        self.assertIn("Choose the word", text)
+        self.assertEqual([b.text for row in keyboard.inline_keyboard for b in row], ["receipt", "recipe", "⬅️ Домашнее задание"])
+
+        wrong = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX}{lesson['id']}:{task['id']}:1")
+        await handle_student_lesson_callback(wrong, self.context)
+        self.assertIn("❌ Неверно.", wrong.callback_query.edits[-1][0])
+        self.assertIn("Правильный ответ: receipt", wrong.callback_query.edits[-1][0])
+
+        correct = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX}{lesson['id']}:{task['id']}:0")
+        await handle_student_lesson_callback(correct, self.context)
+        self.assertIn("✅ Верно!", correct.callback_query.edits[-1][0])
+
+        latest = self.db.list_latest_homework_answers(lesson["id"], self.student["id"])
+        self.assertTrue(latest[task["id"]]["is_correct"])
+        self.assertEqual(latest[task["id"]]["answer"], "receipt")
+
+    async def test_quiz_answer_rejects_out_of_range_option(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(
+            lesson["id"], "quiz", "Choose the word",
+            expected_answer="receipt",
+            metadata_json='{"options": ["receipt", "recipe"], "correct_index": 0}',
+        )
+
+        update = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX}{lesson['id']}:{task['id']}:9")
+        await handle_student_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.edits, [])
+        self.assertEqual(self.db.list_latest_homework_answers(lesson["id"], self.student["id"]), {})
+
+    async def test_homework_task_lookup_is_lesson_scoped(self):
+        food = self._lesson("Lesson 15 — Food")
+        travel = self._lesson("Lesson 16 — Travel")
+        self.db.assign_lesson_to_student(food["id"], "student", self.teacher["id"])
+        self.db.assign_lesson_to_student(travel["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(food["id"], "free", "Write something")
+
+        wrong_lesson = self._callback_update(f"{STUDENT_LESSON_HOMEWORK_TASK_PREFIX}{travel['id']}:{task['id']}")
+        await handle_student_lesson_callback(wrong_lesson, self.context)
+
+        self.assertEqual(wrong_lesson.callback_query.edits[-1][0], "Задание не найдено.")
+
+    async def test_student_cannot_access_homework_for_unassigned_lesson(self):
+        lesson = self._lesson("Lesson 15 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "other", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+
+        for data in (
+            f"{STUDENT_LESSON_HOMEWORK_PREFIX}{lesson['id']}",
+            f"{STUDENT_LESSON_HOMEWORK_TASK_PREFIX}{lesson['id']}:{task['id']}",
+        ):
+            with self.subTest(data=data):
+                update = self._callback_update(data)
+                await handle_student_lesson_callback(update, self.context)
+                self.assertEqual(update.callback_query.edits[-1][0], "Урок недоступен.")
 
     async def test_teacher_menu_unaffected_and_teacher_not_student_handler(self):
         self.assertIn(TEACHER_LESSONS, [b.text for row in teacher_menu_keyboard().keyboard for b in row])
