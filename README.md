@@ -89,6 +89,23 @@ python scripts/seed_sasha_chicaga_words.py
 python scripts/seed_vova_words.py
 ```
 
+## Сброс данных и проверка ролей
+
+`scripts/reset_learning_data.py` очищает контент и прогресс, чтобы начать с чистого листа: удаляет `words`, `word_progress`, `study_sessions`, `daily_activity`, `lessons`, `lesson_words`, `lesson_students`, `homework_tasks`, `homework_answers`. Сохраняет `users`, `student_access`, `user_tutorials`, `product_notifications`, поэтому никто не теряет доступ и роль. Перед удалением всегда создаётся резервная копия SQLite-файла рядом с базой (`<db>.backup-YYYYMMDD-HHMMSS`).
+
+```bash
+python scripts/reset_learning_data.py         # спросит подтверждение (ввести 'reset')
+python scripts/reset_learning_data.py --yes    # без запроса, для автоматизации
+```
+
+Если после сброса что-то не так, восстановить можно из бэкапа — скрипт печатает точную команду `cp ...` в конце.
+
+`scripts/show_roles.py` печатает отчёт по ролям: настроенные admin/teacher/student из конфигурации, зарегистрированных через `/start` пользователей с их ролью и активные `student_access`.
+
+```bash
+python scripts/show_roles.py
+```
+
 ## Запуск на сервере через systemd
 
 Пример размещения проекта: `/opt/english-words-bot`.
