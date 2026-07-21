@@ -133,6 +133,41 @@ sudo systemctl status english-words-bot
 journalctl -u english-words-bot -f
 ```
 
+## Автодеплой на сервер через GitHub Actions
+
+При каждом push в `main` (в том числе после мержа PR) workflow `.github/workflows/deploy.yml` подключается на сервер по SSH и обновляет сервис. Ключ хранится только в GitHub Secrets, доступ к серверу вне GitHub Actions никому дополнительно выдавать не нужно.
+
+Разовая настройка на сервере (от пользователя, под которым уже развёрнут бот, например `englishbot`):
+
+```bash
+# 1. Отдельный ключ только для деплоя (не переиспользовать личный)
+ssh-keygen -t ed25519 -f ~/.ssh/deploy_english_words_bot -N ""
+
+# 2. Публичную часть добавить в authorized_keys
+cat ~/.ssh/deploy_english_words_bot.pub >> ~/.ssh/authorized_keys
+
+# 3. Приватную часть показать один раз, чтобы скопировать в GitHub Secrets,
+#    и больше её нигде не хранить
+cat ~/.ssh/deploy_english_words_bot
+```
+
+Деплой-пользователю нужен `sudo` только на перезапуск сервиса, без пароля и без остального рута. Добавить через `sudo visudo -f /etc/sudoers.d/english-words-bot-deploy`:
+
+```
+englishbot ALL=(root) NOPASSWD: /usr/bin/systemctl restart english-words-bot, /usr/bin/systemctl status english-words-bot
+```
+
+В GitHub: `Settings → Secrets and variables → Actions → New repository secret`, добавить:
+
+| Secret | Значение |
+| --- | --- |
+| `DEPLOY_HOST` | IP или домен сервера |
+| `DEPLOY_USER` | `englishbot` (или другой пользователь, под которым идёт деплой) |
+| `DEPLOY_SSH_KEY` | содержимое приватного ключа `~/.ssh/deploy_english_words_bot` |
+| `DEPLOY_PORT` | опционально, если SSH слушает не 22 |
+
+Путь `/opt/english-words-bot` в workflow соответствует примеру из раздела systemd выше; если реальный путь на сервере другой, поправьте `cd` в `.github/workflows/deploy.yml`.
+
 ## Схема SQLite
 
 Бот создаёт таблицы:
