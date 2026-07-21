@@ -169,10 +169,14 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await handle_student_lesson_message(update, self.context))
         self.assertIn("Lesson 15 — Food", update.effective_message.replies[-1][0])
 
-    def test_student_menu_has_lessons_not_dictionary(self):
+    def test_student_menu_has_lessons_and_legacy_practice(self):
         buttons = [b.text for row in main_menu_keyboard().keyboard for b in row]
-        self.assertEqual(buttons[:4], ["📚 Мои уроки", "🎯 Повторение", "📊 Прогресс", "⚙️ Настройки"])
-        self.assertNotIn("📚 Мой словарь", buttons)
+        self.assertEqual(buttons[0], "📚 Мои уроки")
+        self.assertIn("📚 Мой словарь", buttons)
+        self.assertIn("🎯 Мои карточки", buttons)
+        self.assertIn("🎮 Игра на 10 слов", buttons)
+        self.assertIn("😵 Мои ошибки", buttons)
+        self.assertIn("🔄 Обмен словами", buttons)
 
 
 if __name__ == "__main__":
