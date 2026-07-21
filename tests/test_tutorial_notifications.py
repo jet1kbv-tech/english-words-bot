@@ -113,3 +113,29 @@ class TutorialNotificationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await NotificationService(self.db).notify_lesson_assigned(FailingBot(), "student", lesson))
         self.assertIsNotNone(self.db.get_active_lesson_assignment(lesson["id"]))
+
+    async def test_homework_assignment_notifications_best_effort(self):
+        lesson = self.db.create_teacher_lesson("Lesson 16 — Food", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "translation", "receipt", "чек")
+
+        sent = await NotificationService(self.db).notify_homework_assigned(SimpleNamespace(), "missing", lesson, task)
+        self.assertFalse(sent)
+
+        class Bot:
+            def __init__(self):
+                self.messages = []
+            async def send_message(self, chat_id, text):
+                self.messages.append((chat_id, text))
+
+        bot = Bot()
+        sent = await NotificationService(self.db).notify_homework_assigned(bot, "student", lesson, task)
+        self.assertTrue(sent)
+        self.assertEqual(bot.messages[0][0], 10)
+        self.assertIn("🏠 Новое домашнее задание", bot.messages[0][1])
+        self.assertIn("Задание: receipt", bot.messages[0][1])
+
+        class FailingBot:
+            async def send_message(self, chat_id, text):
+                raise RuntimeError("boom")
+
+        self.assertFalse(await NotificationService(self.db).notify_homework_assigned(FailingBot(), "student", lesson, task))

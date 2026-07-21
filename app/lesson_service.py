@@ -156,3 +156,18 @@ class LessonService:
         if len(answer) > MAX_HOMEWORK_ANSWER_LENGTH:
             raise HomeworkTaskError(f"Слишком длинный ответ: максимум {MAX_HOMEWORK_ANSWER_LENGTH} символов.")
         return self.repository.submit_homework_answer(task_id, user_id, answer, is_correct, feedback)
+
+    def get_latest_homework_answer(self, task_id: int, user_id: int) -> sqlite3.Row | None:
+        return self.repository.get_latest_homework_answer(task_id, user_id)
+
+    def review_homework_answer(
+        self, lesson_id: int, task_id: int, answer_id: int, is_correct: bool, feedback: str | None = None
+    ) -> sqlite3.Row:
+        if self.repository.get_homework_task(lesson_id, task_id) is None:
+            raise ValueError("homework task not found")
+        if self.repository.get_homework_answer(task_id, answer_id) is None:
+            raise ValueError("homework answer not found")
+        feedback = feedback.strip() if feedback else None
+        if feedback and len(feedback) > MAX_HOMEWORK_ANSWER_LENGTH:
+            raise HomeworkTaskError(f"Слишком длинный комментарий: максимум {MAX_HOMEWORK_ANSWER_LENGTH} символов.")
+        return self.repository.review_homework_answer(answer_id, is_correct, feedback)

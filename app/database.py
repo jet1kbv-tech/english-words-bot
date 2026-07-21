@@ -806,6 +806,28 @@ class Database:
             latest[int(row["task_id"])] = row
         return latest
 
+    def get_latest_homework_answer(self, task_id: int, user_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM homework_answers WHERE task_id = ? AND user_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id, user_id),
+        )
+
+    def get_homework_answer(self, task_id: int, answer_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM homework_answers WHERE id = ? AND task_id = ?",
+            (answer_id, task_id),
+        )
+
+    def review_homework_answer(self, answer_id: int, is_correct: bool, feedback: str | None = None) -> sqlite3.Row:
+        self.execute(
+            "UPDATE homework_answers SET is_correct = ?, feedback = ? WHERE id = ?",
+            (int(is_correct), feedback, answer_id),
+        )
+        row = self.fetchone("SELECT * FROM homework_answers WHERE id = ?", (answer_id,))
+        if row is None:
+            raise RuntimeError("Failed to review homework answer")
+        return row
+
     def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
         english = english.strip()
         translation = translation.strip()

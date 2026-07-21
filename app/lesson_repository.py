@@ -51,6 +51,15 @@ class LessonRepository:
     def list_latest_homework_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
         return self.db.list_latest_homework_answers(lesson_id, user_id)
 
+    def get_latest_homework_answer(self, task_id: int, user_id: int) -> sqlite3.Row | None:
+        return self.db.get_latest_homework_answer(task_id, user_id)
+
+    def get_homework_answer(self, task_id: int, answer_id: int) -> sqlite3.Row | None:
+        return self.db.get_homework_answer(task_id, answer_id)
+
+    def review_homework_answer(self, answer_id: int, is_correct: bool, feedback: str | None = None) -> sqlite3.Row:
+        return self.db.review_homework_answer(answer_id, is_correct, feedback)
+
     def add_homework_task(
         self,
         lesson_id: int,
