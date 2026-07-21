@@ -3,7 +3,7 @@ import unittest
 
 from app.auth.roles import Role, RoleResolver, get_user_role, is_user_allowed
 from app.lesson_metadata import lesson_display_name
-from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_ASSIGN_PREFIX, TEACHER_LESSON_ASSIGN_STUDENT_PREFIX, TEACHER_LESSON_UNASSIGN_PREFIX, _format_assign_student_screen, _assign_student_keyboard, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_SELECT_PREFIX, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX, TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX, TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX, TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX, TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX, TEACHER_LESSON_WORDS_AI_EDIT_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_HOMEWORK_ADD_PREFIX, TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX, TEACHER_LESSON_HOMEWORK_CANCEL_PREFIX, TEACHER_LESSON_HOMEWORK_OPEN_PREFIX, TEACHER_LESSON_HOMEWORK_DELETE_PREFIX, TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
+from app.handlers.teacher import TEACHER_LESSON_AI_PREFIX, TEACHER_LESSON_ASSIGN_PREFIX, TEACHER_LESSON_ASSIGN_STUDENT_PREFIX, TEACHER_LESSON_UNASSIGN_PREFIX, _format_assign_student_screen, _assign_student_keyboard, TEACHER_LESSON_WORDS_ADD_PREFIX, TEACHER_LESSON_WORDS_SELECT_PREFIX, TEACHER_LESSON_WORDS_SELECT_TOGGLE_PREFIX, TEACHER_LESSON_WORDS_SELECT_ALL_PREFIX, TEACHER_LESSON_WORDS_SELECT_CLEAR_PREFIX, TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX, TEACHER_LESSON_WORDS_AI_TRANSLATE_PREFIX, TEACHER_LESSON_WORDS_AI_APPLY_PREFIX, TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX, TEACHER_LESSON_WORDS_AI_EDIT_PREFIX, TEACHER_LESSON_WORD_OPEN_PREFIX, TEACHER_LESSON_WORD_EDIT_PREFIX, TEACHER_LESSON_WORDS_CANCEL_PREFIX, TEACHER_LESSON_WORDS_CONFIRM_PREFIX, TEACHER_LESSON_BACK_PREFIX, TEACHER_LESSON_EXERCISES_PREFIX, TEACHER_LESSON_GRAMMAR_PREFIX, TEACHER_LESSON_HOMEWORK_PREFIX, TEACHER_LESSON_HOMEWORK_ADD_PREFIX, TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX, TEACHER_LESSON_HOMEWORK_CANCEL_PREFIX, TEACHER_LESSON_HOMEWORK_OPEN_PREFIX, TEACHER_LESSON_HOMEWORK_DELETE_PREFIX, TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX, TEACHER_LESSON_HOMEWORK_REVIEW_CORRECT_PREFIX, TEACHER_LESSON_HOMEWORK_REVIEW_INCORRECT_PREFIX, TEACHER_LESSON_WORDS_PREFIX, _format_created_lesson, _format_lesson_detail, _format_lessons_screen, _format_lesson_section, _format_teacher_lessons, _format_student_progress, _student_users, handle_teacher_lesson_callback, handle_teacher_message, NOT_STARTED_TEXT
 from app.lesson_service import normalize_lesson_words_import
 from app.keyboards import ADD_STUDENT, TEACHER_CREATE_LESSON, TEACHER_LESSONS, TEACHER_MY_LESSONS, teacher_lessons_keyboard, teacher_menu_keyboard
 
@@ -626,6 +626,105 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         await handle_teacher_lesson_callback(wrong_lesson, self.context)
         self.assertEqual(wrong_lesson.callback_query.edits[-1][0], "Задание не найдено.")
 
+    async def test_homework_detail_shows_pending_answer_with_review_buttons(self) -> None:
+        student = self.db.upsert_user(201, "student", "Student")
+        lesson = self.db.create_teacher_lesson("Lesson 42 — Food", self.teacher["id"])
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+        answer = self.db.submit_homework_answer(task["id"], student["id"], "my answer")
+
+        detail = self._callback_update(f"{TEACHER_LESSON_HOMEWORK_OPEN_PREFIX}{lesson['id']}:{task['id']}")
+        await handle_teacher_lesson_callback(detail, self.context)
+
+        text, keyboard = detail.callback_query.edits[-1]
+        self.assertIn("Ответ ученика: my answer", text)
+        self.assertIn("Статус: ⏳ На проверке", text)
+        buttons = [b.text for row in keyboard.inline_keyboard for b in row]
+        self.assertEqual(buttons, ["✅ Верно", "❌ Неверно", "🗑 Удалить", "⬅️ Домашнее задание"])
+
+    async def test_homework_list_shows_status_icons_for_teacher(self) -> None:
+        student = self.db.upsert_user(202, "student", "Student")
+        lesson = self.db.create_teacher_lesson("Lesson 43 — Food", self.teacher["id"])
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "translation", "receipt", "чек")
+        self.db.submit_homework_answer(task["id"], student["id"], "чек", is_correct=True)
+
+        update = self._callback_update(f"{TEACHER_LESSON_HOMEWORK_PREFIX}{lesson['id']}")
+        await handle_teacher_lesson_callback(update, self.context)
+
+        text = update.callback_query.edits[-1][0]
+        self.assertIn("✅", text)
+
+    async def test_teacher_marks_answer_correct_with_feedback(self) -> None:
+        student = self.db.upsert_user(203, "student", "Student")
+        lesson = self.db.create_teacher_lesson("Lesson 44 — Food", self.teacher["id"])
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+        answer = self.db.submit_homework_answer(task["id"], student["id"], "my answer")
+
+        review = self._callback_update(f"{TEACHER_LESSON_HOMEWORK_REVIEW_CORRECT_PREFIX}{lesson['id']}:{task['id']}:{answer['id']}")
+        await handle_teacher_lesson_callback(review, self.context)
+        self.assertIn("Добавить комментарий", review.callback_query.edits[-1][0])
+        self.assertEqual(
+            self.context.user_data.get("pending_homework_review"),
+            {"lesson_id": lesson["id"], "task_id": task["id"], "answer_id": answer["id"], "is_correct": True},
+        )
+
+        feedback_update = self._update("Отличная работа!")
+        self.assertTrue(await handle_teacher_message(feedback_update, self.context))
+        reply = feedback_update.effective_message.replies[-1][0]
+        self.assertIn("Статус: ✅ Верно", reply)
+        self.assertIn("Комментарий: Отличная работа!", reply)
+        self.assertIsNone(self.context.user_data.get("teacher_action"))
+
+        stored = self.db.get_homework_answer(task["id"], answer["id"])
+        self.assertEqual(stored["is_correct"], 1)
+        self.assertEqual(stored["feedback"], "Отличная работа!")
+
+    async def test_teacher_marks_answer_incorrect_without_feedback(self) -> None:
+        student = self.db.upsert_user(204, "student", "Student")
+        lesson = self.db.create_teacher_lesson("Lesson 45 — Food", self.teacher["id"])
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+        answer = self.db.submit_homework_answer(task["id"], student["id"], "my answer")
+
+        review = self._callback_update(f"{TEACHER_LESSON_HOMEWORK_REVIEW_INCORRECT_PREFIX}{lesson['id']}:{task['id']}:{answer['id']}")
+        await handle_teacher_lesson_callback(review, self.context)
+
+        skip_update = self._update("-")
+        self.assertTrue(await handle_teacher_message(skip_update, self.context))
+        reply = skip_update.effective_message.replies[-1][0]
+        self.assertIn("Статус: ❌ Неверно", reply)
+        self.assertNotIn("Комментарий:", reply)
+
+        stored = self.db.get_homework_answer(task["id"], answer["id"])
+        self.assertEqual(stored["is_correct"], 0)
+        self.assertIsNone(stored["feedback"])
+
+        # Reviewed answers no longer show review buttons.
+        buttons = [b.text for row in skip_update.effective_message.replies[-1][1].inline_keyboard for b in row]
+        self.assertEqual(buttons, ["🗑 Удалить", "⬅️ Домашнее задание"])
+
+    async def test_creating_homework_task_notifies_assigned_student(self) -> None:
+        student = self.db.upsert_user(205, "student", "Student")
+        lesson = self.db.create_teacher_lesson("Lesson 46 — Food", self.teacher["id"])
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+
+        class Bot:
+            def __init__(self):
+                self.messages = []
+            async def send_message(self, chat_id, text):
+                self.messages.append((chat_id, text))
+
+        self.context.bot = Bot()
+        pick = self._callback_update(f"{TEACHER_LESSON_HOMEWORK_ADD_TYPE_PREFIX}free:{lesson['id']}")
+        await handle_teacher_lesson_callback(pick, self.context)
+        await handle_teacher_message(self._update("Write two sentences"), self.context)
+
+        self.assertEqual(len(self.context.bot.messages), 1)
+        self.assertEqual(self.context.bot.messages[0][0], student["telegram_id"])
+        self.assertIn("🏠 Новое домашнее задание", self.context.bot.messages[0][1])
+
     async def test_student_cannot_access_homework_management_callbacks(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 41 — Food", self.teacher["id"])
         task = self.db.add_homework_task(lesson["id"], "free", "Write something")
@@ -634,6 +733,7 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
             f"{TEACHER_LESSON_HOMEWORK_ADD_PREFIX}{lesson['id']}",
             f"{TEACHER_LESSON_HOMEWORK_OPEN_PREFIX}{lesson['id']}:{task['id']}",
             f"{TEACHER_LESSON_HOMEWORK_DELETE_PREFIX}{lesson['id']}:{task['id']}",
+            f"{TEACHER_LESSON_HOMEWORK_REVIEW_CORRECT_PREFIX}{lesson['id']}:{task['id']}:1",
         ):
             with self.subTest(data=data):
                 update = self._callback_update(data, username="privetnormalno", user_id=103)

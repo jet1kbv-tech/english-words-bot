@@ -35,3 +35,22 @@ class NotificationService:
         except Exception:
             logger.exception("Failed to send lesson assignment notification to @%s", student_username)
             return False
+
+    async def notify_homework_assigned(self, bot, student_username: str, lesson, task) -> bool:
+        student = self.db.get_user_by_username(student_username)
+        if student is None:
+            return False
+        text = "\n".join([
+            "🏠 Новое домашнее задание",
+            "",
+            lesson_display_name(lesson),
+            f"Задание: {task['prompt']}",
+            "",
+            "Откройте «Мои уроки» → урок → «Домашнее задание», чтобы ответить.",
+        ])
+        try:
+            await bot.send_message(chat_id=int(student["telegram_id"]), text=text)
+            return True
+        except Exception:
+            logger.exception("Failed to send homework assignment notification to @%s", student_username)
+            return False
