@@ -134,6 +134,21 @@ def _is_text_answer_correct(word: dict, direction: str, answer: str) -> bool:
     return normalized_answer in _translation_variants(word["translation"])
 
 
+async def check_translation_task_answer(prompt: str, expected_answer: str | None, user_answer: str) -> tuple[bool | None, str | None]:
+    """Check a 📝 Перевод homework answer: prompt is English, direction is always EN_TO_RU.
+
+    Returns (is_correct, feedback). is_correct is None when it can't be
+    determined automatically (no AI provider and no teacher-provided
+    expected_answer) — the task then needs manual review, like a free-form one.
+    """
+    ai_result = await check_text_answer(english=prompt, translation=expected_answer or "", direction=EN_TO_RU, user_answer=user_answer)
+    if ai_result is not None:
+        return ai_result.is_correct, ai_result.feedback or None
+    if expected_answer:
+        return _normalize_answer(user_answer) in _translation_variants(expected_answer), None
+    return None, None
+
+
 def _format_full_answer(word: dict, prefix: str | None = None) -> str:
     parts = []
     if prefix:

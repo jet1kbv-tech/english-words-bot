@@ -1,6 +1,8 @@
+import os
 import unittest
+from unittest.mock import patch
 
-from app.handlers.training import EN_TO_RU, RU_TO_EN, _is_text_answer_correct, _normalize_answer, build_game_session_words, build_mistake_session_words, card_weight
+from app.handlers.training import EN_TO_RU, RU_TO_EN, _is_text_answer_correct, _normalize_answer, build_game_session_words, build_mistake_session_words, card_weight, check_translation_task_answer
 
 
 class TrainingWeightTests(unittest.TestCase):
@@ -82,3 +84,35 @@ class TextInputAnswerTests(unittest.TestCase):
         self.assertTrue(_is_text_answer_correct(word, EN_TO_RU, " Неудобный "))
         self.assertTrue(_is_text_answer_correct(word, EN_TO_RU, "странный"))
         self.assertFalse(_is_text_answer_correct(word, EN_TO_RU, "неловко"))
+
+
+class CheckTranslationTaskAnswerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fallback_matches_expected_answer_variants(self) -> None:
+        with patch.dict(os.environ, {"AI_PROVIDER": "none"}):
+            is_correct, feedback = await check_translation_task_answer("receipt", "чек / квитанция", "Чек")
+        self.assertTrue(is_correct)
+        self.assertIsNone(feedback)
+
+    async def test_fallback_rejects_wrong_answer(self) -> None:
+        with patch.dict(os.environ, {"AI_PROVIDER": "none"}):
+            is_correct, feedback = await check_translation_task_answer("receipt", "чек", "рецепт")
+        self.assertFalse(is_correct)
+        self.assertIsNone(feedback)
+
+    async def test_no_expected_answer_and_no_ai_needs_manual_review(self) -> None:
+        with patch.dict(os.environ, {"AI_PROVIDER": "none"}):
+            is_correct, feedback = await check_translation_task_answer("receipt", None, "чек")
+        self.assertIsNone(is_correct)
+        self.assertIsNone(feedback)
+
+    async def test_uses_ai_result_when_available(self) -> None:
+        from app.ai.polza_provider import AICheckResult
+
+        class FakeProvider:
+            async def check_answer(self, *, english, translation, direction, user_answer):
+                return AICheckResult(is_correct=True, feedback="Отлично!")
+
+        with patch.dict(os.environ, {"AI_PROVIDER": "polza"}), patch("app.ai.service.PolzaAIProvider", return_value=FakeProvider()):
+            is_correct, feedback = await check_translation_task_answer("receipt", None, "чек")
+        self.assertTrue(is_correct)
+        self.assertEqual(feedback, "Отлично!")

@@ -774,6 +774,38 @@ class Database:
         )
         return cursor.rowcount > 0
 
+    def submit_homework_answer(
+        self, task_id: int, user_id: int, answer: str, is_correct: bool | None = None, feedback: str | None = None
+    ) -> sqlite3.Row:
+        cursor = self.execute(
+            """
+            INSERT INTO homework_answers (task_id, user_id, answer, is_correct, feedback, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (task_id, user_id, answer, None if is_correct is None else int(is_correct), feedback, utc_now()),
+        )
+        row = self.fetchone("SELECT * FROM homework_answers WHERE id = ?", (cursor.lastrowid,))
+        if row is None:
+            raise RuntimeError("Failed to record homework answer")
+        return row
+
+    def list_latest_homework_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
+        """Latest answer per task for a student, keyed by task_id, for the homework list status."""
+        rows = self.fetchall(
+            """
+            SELECT homework_answers.*
+            FROM homework_answers
+            JOIN homework_tasks ON homework_tasks.id = homework_answers.task_id
+            WHERE homework_tasks.lesson_id = ? AND homework_answers.user_id = ?
+            ORDER BY homework_answers.id ASC
+            """,
+            (lesson_id, user_id),
+        )
+        latest: dict[int, sqlite3.Row] = {}
+        for row in rows:
+            latest[int(row["task_id"])] = row
+        return latest
+
     def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
         english = english.strip()
         translation = translation.strip()

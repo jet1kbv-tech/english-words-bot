@@ -435,6 +435,45 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertFalse(self.db.delete_homework_task(travel["id"], task["id"]))
         self.assertIsNotNone(self.db.get_homework_task(food["id"], task["id"]))
 
+    def test_submit_homework_answer_records_row(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 29 — Food", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "translation", "receipt", "чек")
+
+        answer = self.db.submit_homework_answer(task["id"], self.student["id"], "чек", is_correct=True, feedback="Отлично")
+
+        self.assertEqual(answer["task_id"], task["id"])
+        self.assertEqual(answer["user_id"], self.student["id"])
+        self.assertEqual(answer["answer"], "чек")
+        self.assertEqual(answer["is_correct"], 1)
+        self.assertEqual(answer["feedback"], "Отлично")
+
+    def test_submit_homework_answer_allows_pending_review_with_null_is_correct(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 30 — Food", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+
+        answer = self.db.submit_homework_answer(task["id"], self.student["id"], "my answer")
+
+        self.assertIsNone(answer["is_correct"])
+        self.assertIsNone(answer["feedback"])
+
+    def test_list_latest_homework_answers_keeps_only_newest_per_task(self) -> None:
+        lesson = self.db.create_teacher_lesson("Lesson 31 — Food", self.teacher["id"])
+        task = self.db.add_homework_task(lesson["id"], "translation", "receipt", "чек")
+        other_task = self.db.add_homework_task(lesson["id"], "free", "Write something")
+        other_lesson = self.db.create_teacher_lesson("Lesson 32 — Travel", self.teacher["id"])
+        other_lesson_task = self.db.add_homework_task(other_lesson["id"], "free", "Different lesson")
+
+        self.db.submit_homework_answer(task["id"], self.student["id"], "wrong", is_correct=False)
+        self.db.submit_homework_answer(task["id"], self.student["id"], "чек", is_correct=True)
+        self.db.submit_homework_answer(other_lesson_task["id"], self.student["id"], "irrelevant")
+
+        answers = self.db.list_latest_homework_answers(lesson["id"], self.student["id"])
+
+        self.assertEqual(set(answers.keys()), {task["id"]})
+        self.assertEqual(answers[task["id"]]["answer"], "чек")
+        self.assertEqual(answers[task["id"]]["is_correct"], 1)
+        self.assertNotIn(other_task["id"], answers)
+
 
 class TeacherLessonListTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -577,6 +616,7 @@ class LessonServiceHomeworkTests(unittest.TestCase):
         self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
         self.db.init_schema()
         self.teacher = self.db.upsert_user(40, "teacher", "Teacher")
+        self.student = self.db.upsert_user(41, "student", "Student")
         self.lesson = self.db.create_teacher_lesson("Lesson 50 — Food", self.teacher["id"])
         self.service = LessonService(LessonRepository(self.db))
 
@@ -648,3 +688,23 @@ class LessonServiceHomeworkTests(unittest.TestCase):
 
         with self.assertRaises(HomeworkTaskError):
             self.service.add_quiz_task(self.lesson["id"], "Pick one", ["a", "b"], correct_index=5)
+
+    def test_submit_homework_answer_validates_task_and_length(self) -> None:
+        from app.lesson_service import HomeworkTaskError, MAX_HOMEWORK_ANSWER_LENGTH
+
+        task = self.service.add_free_task(self.lesson["id"], "Write something")
+
+        answer = self.service.submit_homework_answer(self.lesson["id"], task["id"], self.student["id"], "  my answer  ")
+        self.assertEqual(answer["answer"], "my answer")
+
+        with self.assertRaises(HomeworkTaskError):
+            self.service.submit_homework_answer(self.lesson["id"], task["id"], self.student["id"], "   ")
+        with self.assertRaises(HomeworkTaskError):
+            self.service.submit_homework_answer(self.lesson["id"], task["id"], self.student["id"], "x" * (MAX_HOMEWORK_ANSWER_LENGTH + 1))
+
+    def test_submit_homework_answer_rejects_wrong_lesson(self) -> None:
+        other_lesson = self.db.create_teacher_lesson("Lesson 51 — Travel", self.teacher["id"])
+        task = self.service.add_free_task(self.lesson["id"], "Write something")
+
+        with self.assertRaises(ValueError):
+            self.service.submit_homework_answer(other_lesson["id"], task["id"], self.student["id"], "answer")
