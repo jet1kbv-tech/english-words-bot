@@ -96,12 +96,12 @@
 
 ### 3.6 Teacher lessons menu
 
-Teacher menu содержит кнопку `📚 Lessons`. Внутри раздела доступны:
+Teacher menu содержит кнопку `📚 Уроки`. Внутри раздела доступны:
 
 - список lessons с пустым состоянием, кнопками открытия `Lesson <id>`, `➕ Создать lesson` и `⬅️ Назад`;
 - `➕ Создать lesson` — teacher вводит название урока, после чего создаётся draft lesson и сразу показывается detail screen;
 - при создании сохраняется backward-compatible `title`, а lightweight parser пытается заполнить metadata `lesson_number` и `topic` из форматов вроде `Lesson 15 — Food`, `Lesson 15 - Food`, `15 — Food`, `15 - Food` или `Food`;
-- lesson detail организован как секции `Words`, `Grammar`, `Exercises`, `Homework`, `AI Assistant`; экран показывает display name, status, metadata `topic`/`level`/`description`, counts для words/homework и placeholder counts `0` для grammar/exercises.
+- lesson detail организован как секции `📖 Слова`, `📝 Грамматика`, `✏️ Упражнения`, `🏠 Домашнее задание`, `🤖 AI-помощник`; экран показывает display name, статус, metadata `Тема`/`Уровень`/`Описание`, counts для слов/домашнего задания и placeholder counts `0` для грамматики/упражнений. UI-подписи teacher-раздела русифицированы; формат имени урока (`Lesson 15 — Food`) сохранён, потому что в этом же формате учитель вводит название и работает парсер `parse_lesson_title`.
 
 Этот UI не добавляет слова в урок, не публикует уроки, не создаёт домашние задания ученику, не вызывает AI-генерацию и не меняет game flow.
 
@@ -410,7 +410,7 @@ Future statuses:
 - `PUBLISHED`
 - `ARCHIVED`
 
-Teacher Lesson UI currently supports listing and creating draft lessons. Teacher Lesson Detail is organized as sections: Words, Grammar, Exercises, Homework, AI Assistant. Current implementation only provides navigation placeholders; actual editing and AI generation are separate future PRs.
+Teacher Lesson UI currently supports listing and creating draft lessons. Teacher Lesson Detail is organized as sections: Слова, Грамматика, Упражнения, Домашнее задание, AI-помощник (labels russified). Current implementation only provides navigation placeholders; actual editing and AI generation are separate future PRs.
 
 В будущем урок будет связывать четыре направления данных:
 

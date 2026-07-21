@@ -33,9 +33,9 @@ _PENDING_AI_TRANSLATION_EDIT = "pending_ai_translation_edit"
 _SELECTED_LESSON_WORDS = "selected_lesson_words"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
-LESSON_BACK_TO_LIST = "⬅️ К списку lessons"
+LESSON_BACK_TO_LIST = "⬅️ К списку уроков"
 TEACHER_LESSONS_BACK = "⬅️ Назад"
-TEACHER_LESSON_OPEN_PREFIX = "Lesson "
+TEACHER_LESSON_OPEN_PREFIX = "Урок "
 TEACHER_LESSON_WORDS_PREFIX = "teacher:lesson:words:"
 TEACHER_LESSON_GRAMMAR_PREFIX = "teacher:lesson:grammar:"
 TEACHER_LESSON_EXERCISES_PREFIX = "teacher:lesson:exercises:"
@@ -91,15 +91,15 @@ def _status_label(status: str) -> str:
 
 def _format_lessons_screen(lessons: list) -> str:
     if not lessons:
-        return "📚 Lessons\n\nПока нет уроков.\n\nСоздайте первый урок."
-    lines = ["📚 Lessons", ""]
+        return "📚 Уроки\n\nПока нет уроков.\n\nСоздайте первый урок."
+    lines = ["📚 Уроки", ""]
     for index, lesson in enumerate(lessons, start=1):
         lines.append(f"{index}. {lesson_display_name(lesson)} — {_status_label(lesson['status'])}")
     return "\n".join(lines)
 
 
 def _lessons_list_keyboard(lessons: list) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(f"Lesson {lesson['id']}")] for lesson in lessons]
+    rows = [[KeyboardButton(f"Урок {lesson['id']}")] for lesson in lessons]
     rows.append([KeyboardButton(TEACHER_CREATE_LESSON)])
     rows.append([KeyboardButton(TEACHER_LESSONS_BACK)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
@@ -118,33 +118,33 @@ def _optional_summary_value(summary, key: str) -> str:
 def _format_lesson_detail(summary, assignment=None) -> str:
     student = f"@{assignment['student_username']}" if assignment is not None else "—"
     return "\n".join([
-        "📚 Lesson",
+        "📚 Урок",
         "",
-        f"Lesson: {lesson_display_name(summary)}",
-        f"Status: {_status_label(summary['status'])}",
+        f"Урок: {lesson_display_name(summary)}",
+        f"Статус: {_status_label(summary['status'])}",
         "",
-        f"Topic: {_optional_summary_value(summary, 'topic')}",
-        f"Level: {_optional_summary_value(summary, 'level')}",
-        f"Description: {_optional_summary_value(summary, 'description')}",
+        f"Тема: {_optional_summary_value(summary, 'topic')}",
+        f"Уровень: {_optional_summary_value(summary, 'level')}",
+        f"Описание: {_optional_summary_value(summary, 'description')}",
         "",
-        "👤 Student",
+        "👤 Ученик",
         "",
         student,
         "",
-        f"📖 Words: {_count(summary, 'words_count')}",
-        f"📝 Grammar: {_count(summary, 'grammar_count')}",
-        f"✏️ Exercises: {_count(summary, 'exercises_count')}",
-        f"🏠 Homework: {_count(summary, 'homework_count')}",
+        f"📖 Слова: {_count(summary, 'words_count')}",
+        f"📝 Грамматика: {_count(summary, 'grammar_count')}",
+        f"✏️ Упражнения: {_count(summary, 'exercises_count')}",
+        f"🏠 Домашнее задание: {_count(summary, 'homework_count')}",
     ])
 
 
 def _lesson_detail_keyboard(lesson_id: int, assignment=None) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("📖 Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")],
-        [InlineKeyboardButton("📝 Grammar", callback_data=f"{TEACHER_LESSON_GRAMMAR_PREFIX}{lesson_id}")],
-        [InlineKeyboardButton("✏️ Exercises", callback_data=f"{TEACHER_LESSON_EXERCISES_PREFIX}{lesson_id}")],
-        [InlineKeyboardButton("🏠 Homework", callback_data=f"{TEACHER_LESSON_HOMEWORK_PREFIX}{lesson_id}")],
-        [InlineKeyboardButton("🤖 AI Assistant", callback_data=f"{TEACHER_LESSON_AI_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("📖 Слова", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("📝 Грамматика", callback_data=f"{TEACHER_LESSON_GRAMMAR_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("✏️ Упражнения", callback_data=f"{TEACHER_LESSON_EXERCISES_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("🏠 Домашнее задание", callback_data=f"{TEACHER_LESSON_HOMEWORK_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("🤖 AI-помощник", callback_data=f"{TEACHER_LESSON_AI_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("👤 Назначить ученика", callback_data=f"{TEACHER_LESSON_ASSIGN_PREFIX}{lesson_id}")],
     ]
     if assignment is not None:
@@ -159,7 +159,7 @@ def _lesson_detail_keyboard(lesson_id: int, assignment=None) -> InlineKeyboardMa
 def _format_assign_student_screen(summary, students: list) -> str:
     if not students:
         return "Нет доступных учеников."
-    return "\n".join(["Выберите ученика для lesson:", "", lesson_display_name(summary)])
+    return "\n".join(["Выберите ученика для урока:", "", lesson_display_name(summary)])
 
 def _assign_student_keyboard(lesson_id: int, students: list) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(f"@{student['username']}", callback_data=f"{TEACHER_LESSON_ASSIGN_STUDENT_PREFIX}{lesson_id}:{student['username']}")] for student in students]
@@ -175,8 +175,8 @@ def _assign_student_ids_from_callback(data: str) -> tuple[int, str] | None:
 
 def _format_lesson_words(words: list) -> str:
     if not words:
-        return "📖 Words\n\nВ этом уроке пока нет слов."
-    lines = ["📖 Words", "", f"Всего слов: {len(words)}", ""]
+        return "📖 Слова\n\nВ этом уроке пока нет слов."
+    lines = ["📖 Слова", "", f"Всего слов: {len(words)}", ""]
     lines.extend(f"• {word['text']}" for word in words)
     return "\n".join(lines)
 
@@ -190,7 +190,7 @@ def _lesson_words_keyboard(lesson_id: int, words: list | None = None) -> InlineK
         rows.append([InlineKeyboardButton("☑️ Выбрать", callback_data=f"{TEACHER_LESSON_WORDS_SELECT_PREFIX}{lesson_id}")])
     rows.extend([
         [InlineKeyboardButton("➕ Добавить слова", callback_data=f"{TEACHER_LESSON_WORDS_ADD_PREFIX}{lesson_id}")],
-        [InlineKeyboardButton("⬅️ Lesson", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("⬅️ Урок", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")],
     ])
     return InlineKeyboardMarkup(rows)
 
@@ -216,8 +216,8 @@ def _prune_lesson_words_selection(context: ContextTypes.DEFAULT_TYPE, lesson_id:
 
 def _format_lesson_words_selection(words: list, selected_word_ids: set[int]) -> str:
     if not words:
-        return "📖 Words — выбор\n\nВ этом уроке пока нет слов."
-    lines = ["📖 Words — выбор", "", f"Выбрано: {len(selected_word_ids)} из {len(words)}", ""]
+        return "📖 Слова — выбор\n\nВ этом уроке пока нет слов."
+    lines = ["📖 Слова — выбор", "", f"Выбрано: {len(selected_word_ids)} из {len(words)}", ""]
     for word in words:
         mark = "☑" if int(word["word_id"]) in selected_word_ids else "☐"
         lines.append(f"{mark} {word['text']}")
@@ -253,24 +253,24 @@ def _optional_word_value(word, key: str) -> str:
 
 def _format_lesson_word_detail(summary, word) -> str:
     if summary is None or word is None:
-        return "Word не найден."
+        return "Слово не найдено."
     return "\n".join([
-        "📖 Word",
+        "📖 Слово",
         "",
-        f"Lesson: {lesson_display_name(summary)}",
-        f"English: {_optional_word_value(word, 'english')}",
-        f"Translation: {_optional_word_value(word, 'translation')}",
-        f"Example: {_optional_word_value(word, 'example')}",
-        f"Topic: {_optional_word_value(word, 'topic')}",
+        f"Урок: {lesson_display_name(summary)}",
+        f"Английский: {_optional_word_value(word, 'english')}",
+        f"Перевод: {_optional_word_value(word, 'translation')}",
+        f"Пример: {_optional_word_value(word, 'example')}",
+        f"Тема: {_optional_word_value(word, 'topic')}",
     ])
 
 
 def _lesson_word_detail_keyboard(lesson_id: int, word_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Translation", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}translation:{lesson_id}:{word_id}")],
-        [InlineKeyboardButton("✏️ Example", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}example:{lesson_id}:{word_id}")],
-        [InlineKeyboardButton("✏️ Topic", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}topic:{lesson_id}:{word_id}")],
-        [InlineKeyboardButton("⬅️ Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("✏️ Перевод", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}translation:{lesson_id}:{word_id}")],
+        [InlineKeyboardButton("✏️ Пример", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}example:{lesson_id}:{word_id}")],
+        [InlineKeyboardButton("✏️ Тема", callback_data=f"{TEACHER_LESSON_WORD_EDIT_PREFIX}topic:{lesson_id}:{word_id}")],
+        [InlineKeyboardButton("⬅️ Слова", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")],
     ])
 
 
@@ -307,12 +307,12 @@ def _ai_translation_preview_keyboard(lesson_id: int, translations: list[dict[str
 
 
 def _ai_translation_fallback_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Words", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Слова", callback_data=f"{TEACHER_LESSON_WORDS_PREFIX}{lesson_id}")]])
 
 
 def _ai_translation_missing_item_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬅️ К preview", callback_data=f"{TEACHER_LESSON_WORDS_AI_PREVIEW_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("⬅️ К предпросмотру", callback_data=f"{TEACHER_LESSON_WORDS_AI_PREVIEW_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX}{lesson_id}")],
     ])
 
@@ -407,18 +407,18 @@ async def _show_lesson_words_selection(update: Update, context: ContextTypes.DEF
 
 def _format_lesson_section(summary, section: str) -> str:
     descriptions = {
-        "words": ("📖 Words", "Этот раздел скоро позволит добавлять и редактировать слова урока."),
-        "grammar": ("📝 Grammar", "Этот раздел скоро позволит добавлять грамматическую тему и объяснения."),
-        "exercises": ("✏️ Exercises", "Этот раздел скоро позволит добавлять упражнения урока."),
-        "homework": ("🏠 Homework", "Этот раздел скоро позволит собрать домашнее задание по уроку."),
-        "ai": ("🤖 AI Assistant", "Скоро здесь можно будет сгенерировать слова, упражнения, домашку и подсказки с помощью AI."),
+        "words": ("📖 Слова", "Этот раздел скоро позволит добавлять и редактировать слова урока."),
+        "grammar": ("📝 Грамматика", "Этот раздел скоро позволит добавлять грамматическую тему и объяснения."),
+        "exercises": ("✏️ Упражнения", "Этот раздел скоро позволит добавлять упражнения урока."),
+        "homework": ("🏠 Домашнее задание", "Этот раздел скоро позволит собрать домашнее задание по уроку."),
+        "ai": ("🤖 AI-помощник", "Скоро здесь можно будет сгенерировать слова, упражнения, домашку и подсказки с помощью AI."),
     }
     title, description = descriptions[section]
-    return "\n".join([title, "", description, "", f"Lesson: {lesson_display_name(summary)}"])
+    return "\n".join([title, "", description, "", f"Урок: {lesson_display_name(summary)}"])
 
 
 def _lesson_section_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К lesson", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К уроку", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")]])
 
 
 async def _show_lessons_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -435,7 +435,7 @@ async def _show_lesson_detail(update: Update, context: ContextTypes.DEFAULT_TYPE
     if update.effective_message is None:
         return
     if summary is None:
-        await update.effective_message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(_lesson_service(db).list_lessons()))
+        await update.effective_message.reply_text("Урок не найден.", reply_markup=_lessons_list_keyboard(_lesson_service(db).list_lessons()))
         return
     context.user_data["current_teacher_lesson_id"] = lesson_id
     assignment = _lesson_service(db).get_active_lesson_assignment(lesson_id)
@@ -498,7 +498,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         summary = service.get_lesson_summary(lesson_id)
         student = _student_by_label(_student_users(context), username)
         if summary is None:
-            await query.edit_message_text("Lesson не найден.")
+            await query.edit_message_text("Урок не найден.")
             return
         if student is None:
             await query.edit_message_text("Ученик недоступен.", reply_markup=_assign_student_keyboard(lesson_id, _student_users(context)))
@@ -512,7 +512,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_ASSIGN_PREFIX)
         summary = service.get_lesson_summary(lesson_id) if lesson_id is not None else None
         if lesson_id is None or summary is None:
-            await query.edit_message_text("Lesson не найден.")
+            await query.edit_message_text("Урок не найден.")
             return
         students = _student_users(context)
         await query.edit_message_text(_format_assign_student_screen(summary, students), reply_markup=_assign_student_keyboard(lesson_id, students))
@@ -522,7 +522,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_UNASSIGN_PREFIX)
         summary = service.get_lesson_summary(lesson_id) if lesson_id is not None else None
         if lesson_id is None or summary is None:
-            await query.edit_message_text("Lesson не найден.")
+            await query.edit_message_text("Урок не найден.")
             return
         service.unassign_lesson(lesson_id)
         await query.edit_message_text(_format_lesson_detail(summary, None), reply_markup=_lesson_detail_keyboard(lesson_id, None))
@@ -534,20 +534,20 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             return
         lesson_id, word_id = ids
         if service.get_lesson_summary(lesson_id) is None:
-            await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            await query.edit_message_text("Черновик не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
             return
         translations = _ai_translation_draft_for_lesson(context, lesson_id)
         if not translations:
             _clear_ai_translation_state(context)
-            await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            await query.edit_message_text("Черновик не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
             return
         item = _find_ai_translation_draft_item(translations, word_id)
         if item is None:
-            await query.edit_message_text("Draft item не найден.", reply_markup=_ai_translation_missing_item_keyboard(lesson_id))
+            await query.edit_message_text("Пункт черновика не найден.", reply_markup=_ai_translation_missing_item_keyboard(lesson_id))
             return
         if service.get_lesson_word(lesson_id, word_id) is None:
             _clear_ai_translation_state(context)
-            await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            await query.edit_message_text("Черновик не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
             return
         context.user_data["teacher_action"] = _EDIT_AI_TRANSLATION_DRAFT
         context.user_data[_PENDING_AI_TRANSLATION_EDIT] = {"lesson_id": lesson_id, "word_id": word_id}
@@ -572,14 +572,14 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             return
         field, lesson_id, word_id = parsed
         if service.get_lesson_word(lesson_id, word_id) is None:
-            await query.edit_message_text("Word не найден.")
+            await query.edit_message_text("Слово не найдено.")
             return
         context.user_data["teacher_action"] = _EDIT_LESSON_WORD
         context.user_data[_PENDING_WORD_EDIT] = {"field": field, "lesson_id": lesson_id, "word_id": word_id}
         prompts = {
             "translation": "Введите перевод слова.",
             "example": "Введите пример для слова.",
-            "topic": "Введите topic для слова.",
+            "topic": "Введите тему для слова.",
         }
         await query.edit_message_text(f"{prompts[field]}\n\nЧтобы очистить поле, отправьте '-' или '—' или 'пусто'.")
         return
@@ -590,7 +590,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         lesson_id = _lesson_id_from_callback(data, ai_prefix)
         if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
             if query.message is not None:
-                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+                await query.message.reply_text("Урок не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
             return
         context.user_data["current_teacher_lesson_id"] = lesson_id
         if ai_prefix == TEACHER_LESSON_WORDS_AI_CANCEL_PREFIX:
@@ -601,7 +601,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             translations = _ai_translation_draft_for_lesson(context, lesson_id)
             if not translations:
                 _clear_ai_translation_state(context)
-                await query.edit_message_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+                await query.edit_message_text("Черновик не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
                 return
             await query.edit_message_text(_format_ai_translation_preview(translations), reply_markup=_ai_translation_preview_keyboard(lesson_id, translations))
             return
@@ -651,7 +651,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         lesson_id, word_id = ids
         if service.get_lesson_summary(lesson_id) is None:
             if query.message is not None:
-                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+                await query.message.reply_text("Урок не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
             return
         words = service.list_lesson_words(lesson_id)
         actual_ids = _actual_word_ids(words)
@@ -675,7 +675,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         lesson_id = _lesson_id_from_callback(data, select_prefix)
         if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
             if query.message is not None:
-                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+                await query.message.reply_text("Урок не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
             return
         context.user_data["current_teacher_lesson_id"] = lesson_id
         if select_prefix == TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX:
@@ -701,7 +701,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         lesson_id = _lesson_id_from_callback(data, words_prefix)
         if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
             if query.message is not None:
-                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+                await query.message.reply_text("Урок не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
             return
         context.user_data["current_teacher_lesson_id"] = lesson_id
         if words_prefix == TEACHER_LESSON_WORDS_ADD_PREFIX:
@@ -733,7 +733,7 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         summary = service.get_lesson_summary(lesson_id)
         if summary is None:
             if query.message is not None:
-                await query.message.reply_text("Lesson не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
+                await query.message.reply_text("Урок не найден.", reply_markup=_lessons_list_keyboard(service.list_lessons()))
             return
         context.user_data["current_teacher_lesson_id"] = lesson_id
         if prefix == TEACHER_LESSON_BACK_PREFIX:
@@ -773,7 +773,7 @@ def _student_users(context: ContextTypes.DEFAULT_TYPE) -> list:
     return db.list_student_targets(student_usernames, getattr(settings, "display_names", {}))
 
 
-def _student_keyboard(students: list, back_label: str = "↩️ Teacher menu") -> ReplyKeyboardMarkup:
+def _student_keyboard(students: list, back_label: str = "↩️ Меню учителя") -> ReplyKeyboardMarkup:
     rows = []
     for student in students:
         suffix = " — ещё не запускал бота" if not student.get("has_user", True) else ""
@@ -817,11 +817,11 @@ def _format_created_lesson(lesson, student) -> str:
     return "\n".join(
         [
             "Урок создан",
-            f"title: {lesson['title']}",
-            f"student: {student['display_name']} (@{student['username']})",
-            f"theme: {lesson['theme'] or '-'}",
-            f"grammar_topic: {lesson['grammar_topic'] or '-'}",
-            f"status={lesson['status']}",
+            f"Название: {lesson['title']}",
+            f"Ученик: {student['display_name']} (@{student['username']})",
+            f"Тема: {lesson['theme'] or '-'}",
+            f"Грамматика: {lesson['grammar_topic'] or '-'}",
+            f"Статус: {_status_label(lesson['status'])}",
         ]
     )
 
@@ -832,7 +832,7 @@ def _format_teacher_lessons(lessons: list) -> str:
     lines = ["📋 Мои уроки:"]
     for lesson in lessons:
         student = f"{lesson['student_display_name']} (@{lesson['student_username']})"
-        lines.append(f"• {lesson['title']} — {student} — theme: {lesson['theme'] or '-'} — status: {lesson['status']}")
+        lines.append(f"• {lesson['title']} — {student} — тема: {lesson['theme'] or '-'} — статус: {_status_label(lesson['status'])}")
     return "\n".join(lines)
 
 def _format_students(students: list) -> str:
@@ -869,7 +869,7 @@ def _format_student_progress(db: Database, student) -> str:
 async def show_teacher_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("teacher_action", None)
     if update.effective_message:
-        await update.effective_message.reply_text("Teacher menu:", reply_markup=teacher_menu_keyboard())
+        await update.effective_message.reply_text("Меню учителя:", reply_markup=teacher_menu_keyboard())
 
 
 async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -887,7 +887,7 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
     if context.user_data.get("impersonated_user_id"):
         return False
 
-    if text in {"↩️ Teacher menu", TEACHER_LESSONS_BACK, "/start"}:
+    if text in {"↩️ Меню учителя", "↩️ Teacher menu", TEACHER_LESSONS_BACK, "/start"}:
         await show_teacher_menu(update, context)
         return True
     if text == TEACHER_STUDENTS:
@@ -933,13 +933,13 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         translations = _ai_translation_draft_for_lesson(context, lesson_id) if lesson_id else None
         if not translations:
             _clear_ai_translation_state(context)
-            await update.effective_message.reply_text("Draft не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
+            await update.effective_message.reply_text("Черновик не найден.", reply_markup=_ai_translation_fallback_keyboard(lesson_id))
             return True
         item = _find_ai_translation_draft_item(translations, word_id) if word_id else None
         if item is None:
             context.user_data.pop("teacher_action", None)
             context.user_data.pop(_PENDING_AI_TRANSLATION_EDIT, None)
-            await update.effective_message.reply_text("Draft item не найден.", reply_markup=_ai_translation_missing_item_keyboard(lesson_id))
+            await update.effective_message.reply_text("Пункт черновика не найден.", reply_markup=_ai_translation_missing_item_keyboard(lesson_id))
             return True
         value = text.strip()
         if not value:
@@ -973,7 +973,7 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data.pop("teacher_action", None)
         context.user_data.pop(_PENDING_WORD_EDIT, None)
         if not saved:
-            await update.effective_message.reply_text("Word не найден.")
+            await update.effective_message.reply_text("Слово не найдено.")
             return True
         summary = _lesson_service(db).get_lesson_summary(lesson_id)
         word = _lesson_service(db).get_lesson_word(lesson_id, word_id)
@@ -1023,7 +1023,7 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
             return True
         context.user_data["lesson_draft"] = {"student_user_id": student["id"]}
         context.user_data["teacher_action"] = _CREATE_LESSON_TITLE
-        await update.effective_message.reply_text("Введите title урока:")
+        await update.effective_message.reply_text("Введите название урока:")
         return True
     if action == _CREATE_LESSON_TITLE:
         title = text.strip()
@@ -1038,7 +1038,7 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
     if action == _CREATE_LESSON_THEME:
         context.user_data.setdefault("lesson_draft", {})["theme"] = _optional_value(text)
         context.user_data["teacher_action"] = _CREATE_LESSON_GRAMMAR
-        await update.effective_message.reply_text("Введите grammar_topic или '-' чтобы пропустить:")
+        await update.effective_message.reply_text("Введите грамматическую тему или '-' чтобы пропустить:")
         return True
     if action == _CREATE_LESSON_GRAMMAR:
         draft = context.user_data.get("lesson_draft", {})

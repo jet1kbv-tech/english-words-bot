@@ -62,7 +62,7 @@ class TeacherLessonUiTests(unittest.TestCase):
 
     def test_lesson_detail_shows_dash_without_assignment(self) -> None:
         formatted = _format_lesson_detail({"title": "Lesson 15 — Food", "lesson_number": 15, "topic": "Food", "description": None, "level": None, "status": "DRAFT", "words_count": 0, "grammar_count": 0, "exercises_count": 0, "homework_count": 0})
-        self.assertIn("👤 Student", formatted)
+        self.assertIn("👤 Ученик", formatted)
         self.assertIn("\n—\n", formatted)
 
     def test_lesson_detail_shows_active_student(self) -> None:
@@ -93,15 +93,15 @@ class TeacherLessonUiTests(unittest.TestCase):
 
         formatted = _format_lesson_detail(summary)
 
-        self.assertIn("Lesson: Lesson 15 — Food", formatted)
-        self.assertIn("Topic: Food", formatted)
-        self.assertIn("Level: —", formatted)
-        self.assertIn("Description: —", formatted)
-        self.assertIn("Status: Draft", formatted)
-        self.assertIn("📖 Words: 2", formatted)
-        self.assertIn("📝 Grammar: 0", formatted)
-        self.assertIn("✏️ Exercises: 0", formatted)
-        self.assertIn("🏠 Homework: 1", formatted)
+        self.assertIn("Урок: Lesson 15 — Food", formatted)
+        self.assertIn("Тема: Food", formatted)
+        self.assertIn("Уровень: —", formatted)
+        self.assertIn("Описание: —", formatted)
+        self.assertIn("Статус: Draft", formatted)
+        self.assertIn("📖 Слова: 2", formatted)
+        self.assertIn("📝 Грамматика: 0", formatted)
+        self.assertIn("✏️ Упражнения: 0", formatted)
+        self.assertIn("🏠 Домашнее задание: 1", formatted)
 
     def test_lesson_display_name_and_list_use_metadata(self) -> None:
         self.assertEqual(lesson_display_name({"title": "Raw", "lesson_number": 15, "topic": "Food"}), "Lesson 15 — Food")
@@ -119,7 +119,7 @@ class TeacherLessonUiTests(unittest.TestCase):
     def test_lesson_section_uses_display_name(self) -> None:
         formatted = _format_lesson_section({"title": "Raw", "lesson_number": 15, "topic": "Food"}, "words")
 
-        self.assertIn("Lesson: Lesson 15 — Food", formatted)
+        self.assertIn("Урок: Lesson 15 — Food", formatted)
 
     def test_lesson_formatters_show_requested_fields(self) -> None:
         lesson = {"title": "Past Simple", "theme": None, "grammar_topic": "Past Simple", "status": "DRAFT"}
@@ -128,11 +128,11 @@ class TeacherLessonUiTests(unittest.TestCase):
         created = _format_created_lesson(lesson, student)
 
         self.assertIn("Урок создан", created)
-        self.assertIn("title: Past Simple", created)
-        self.assertIn("student: Student (@student)", created)
-        self.assertIn("theme: -", created)
-        self.assertIn("grammar_topic: Past Simple", created)
-        self.assertIn("status=DRAFT", created)
+        self.assertIn("Название: Past Simple", created)
+        self.assertIn("Ученик: Student (@student)", created)
+        self.assertIn("Тема: -", created)
+        self.assertIn("Грамматика: Past Simple", created)
+        self.assertIn("Статус: Draft", created)
 
     def test_my_lessons_formatter_shows_title_student_theme_status(self) -> None:
         lesson = {
@@ -147,8 +147,8 @@ class TeacherLessonUiTests(unittest.TestCase):
 
         self.assertIn("Past Simple", formatted)
         self.assertIn("Student (@student)", formatted)
-        self.assertIn("theme: Travel", formatted)
-        self.assertIn("status: DRAFT", formatted)
+        self.assertIn("тема: Travel", formatted)
+        self.assertIn("статус: Draft", formatted)
 
 
 if __name__ == "__main__":
@@ -227,7 +227,7 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         update = self._update(TEACHER_LESSONS)
 
         self.assertTrue(await handle_teacher_message(update, self.context))
-        self.assertIn("📚 Lessons", update.effective_message.replies[-1][0])
+        self.assertIn("📚 Уроки", update.effective_message.replies[-1][0])
 
     async def test_student_cannot_access_teacher_lessons_handler(self) -> None:
         update = self._update(TEACHER_LESSONS)
@@ -253,20 +253,20 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertIn(expected, update.callback_query.edits[-1][0])
                 if prefix != TEACHER_LESSON_WORDS_PREFIX:
-                    self.assertIn("Lesson: Lesson 15 — Food", update.callback_query.edits[-1][0])
+                    self.assertIn("Урок: Lesson 15 — Food", update.callback_query.edits[-1][0])
 
         back = self._callback_update(f"{TEACHER_LESSON_BACK_PREFIX}{lesson['id']}")
         await handle_teacher_lesson_callback(back, self.context)
 
-        self.assertIn("📚 Lesson", back.callback_query.edits[-1][0])
-        self.assertIn("📖 Words: 0", back.callback_query.edits[-1][0])
+        self.assertIn("📚 Урок", back.callback_query.edits[-1][0])
+        self.assertIn("📖 Слова: 0", back.callback_query.edits[-1][0])
 
     async def test_lesson_section_callback_missing_lesson_is_safe(self) -> None:
         update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}999")
 
         await handle_teacher_lesson_callback(update, self.context)
 
-        self.assertEqual(update.callback_query.message.replies[-1][0], "Lesson не найден.")
+        self.assertEqual(update.callback_query.message.replies[-1][0], "Урок не найден.")
 
     async def test_student_cannot_access_lesson_section_callbacks(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
@@ -295,17 +295,17 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         detail_update = self._callback_update(f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{lesson['id']}:{words[0]['word_id']}")
         await handle_teacher_lesson_callback(detail_update, self.context)
 
-        self.assertIn("📖 Word", detail_update.callback_query.edits[-1][0])
-        self.assertIn("Lesson: Lesson 15 — Food", detail_update.callback_query.edits[-1][0])
-        self.assertIn("English: receipt", detail_update.callback_query.edits[-1][0])
-        self.assertIn("Translation: —", detail_update.callback_query.edits[-1][0])
-        self.assertIn("Example: —", detail_update.callback_query.edits[-1][0])
-        self.assertIn("Topic: —", detail_update.callback_query.edits[-1][0])
+        self.assertIn("📖 Слово", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Урок: Lesson 15 — Food", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Английский: receipt", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Перевод: —", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Пример: —", detail_update.callback_query.edits[-1][0])
+        self.assertIn("Тема: —", detail_update.callback_query.edits[-1][0])
 
         back_update = self._callback_update(f"{TEACHER_LESSON_WORDS_PREFIX}{lesson['id']}")
         await handle_teacher_lesson_callback(back_update, self.context)
 
-        self.assertIn("📖 Words", back_update.callback_query.edits[-1][0])
+        self.assertIn("📖 Слова", back_update.callback_query.edits[-1][0])
         self.assertIn("• receipt", back_update.callback_query.edits[-1][0])
 
     async def test_word_detail_missing_or_wrong_lesson_is_safe(self) -> None:
@@ -317,12 +317,12 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         wrong_lesson_update = self._callback_update(f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{second_lesson['id']}:{word['word_id']}")
         await handle_teacher_lesson_callback(wrong_lesson_update, self.context)
 
-        self.assertEqual(wrong_lesson_update.callback_query.edits[-1][0], "Word не найден.")
+        self.assertEqual(wrong_lesson_update.callback_query.edits[-1][0], "Слово не найдено.")
 
         missing_update = self._callback_update(f"{TEACHER_LESSON_WORD_OPEN_PREFIX}{first_lesson['id']}:999")
         await handle_teacher_lesson_callback(missing_update, self.context)
 
-        self.assertEqual(missing_update.callback_query.edits[-1][0], "Word не найден.")
+        self.assertEqual(missing_update.callback_query.edits[-1][0], "Слово не найдено.")
 
     async def test_student_cannot_access_word_detail_callback(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
@@ -344,14 +344,14 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         word_id = self.db.list_lesson_words(lesson["id"])[0]["word_id"]
 
         for field, callback_label, value, expected_line in [
-            ("translation", "Translation", " чек ", "Translation: чек"),
-            ("example", "Example", "Can I have the receipt, please?", "Example: Can I have the receipt, please?"),
-            ("topic", "Topic", " Shopping ", "Topic: Shopping"),
+            ("translation", "Translation", " чек ", "Перевод: чек"),
+            ("example", "Example", "Can I have the receipt, please?", "Пример: Can I have the receipt, please?"),
+            ("topic", "Topic", " Shopping ", "Тема: Shopping"),
         ]:
             with self.subTest(field=field):
                 edit_update = self._callback_update(f"{TEACHER_LESSON_WORD_EDIT_PREFIX}{field}:{lesson['id']}:{word_id}")
                 await handle_teacher_lesson_callback(edit_update, self.context)
-                self.assertIn(f"Введите {('перевод слова' if field == 'translation' else 'пример для слова' if field == 'example' else 'topic для слова')}", edit_update.callback_query.edits[-1][0])
+                self.assertIn(f"Введите {('перевод слова' if field == 'translation' else 'пример для слова' if field == 'example' else 'тему для слова')}", edit_update.callback_query.edits[-1][0])
                 self.assertIn("Чтобы очистить поле", edit_update.callback_query.edits[-1][0])
 
                 message_update = self._update(value)
@@ -373,10 +373,10 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(await handle_teacher_message(message_update, self.context))
 
-        self.assertIn("📖 Word", message_update.effective_message.replies[-1][0])
-        self.assertIn("Translation: —", message_update.effective_message.replies[-1][0])
+        self.assertIn("📖 Слово", message_update.effective_message.replies[-1][0])
+        self.assertIn("Перевод: —", message_update.effective_message.replies[-1][0])
         buttons = [button.text for row in message_update.effective_message.replies[-1][1].inline_keyboard for button in row]
-        self.assertIn("⬅️ Words", buttons)
+        self.assertIn("⬅️ Слова", buttons)
 
     async def test_student_cannot_start_word_detail_edit_callback(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 15 — Food", self.teacher["id"])
@@ -401,7 +401,7 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         await handle_teacher_lesson_callback(detail_update, self.context)
 
         buttons = [button.text for row in detail_update.callback_query.edits[-1][1].inline_keyboard for button in row]
-        self.assertEqual(buttons, ["✏️ Translation", "✏️ Example", "✏️ Topic", "⬅️ Words"])
+        self.assertEqual(buttons, ["✏️ Перевод", "✏️ Пример", "✏️ Тема", "⬅️ Слова"])
 
     async def test_teacher_import_words_preview_confirm_and_order(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 20 — Food", self.teacher["id"])
@@ -468,7 +468,7 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
         select_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_PREFIX}{lesson['id']}")
         await handle_teacher_lesson_callback(select_update, self.context)
-        self.assertIn("📖 Words — выбор", select_update.callback_query.edits[-1][0])
+        self.assertIn("📖 Слова — выбор", select_update.callback_query.edits[-1][0])
         self.assertIn("Выбрано: 0 из 3", select_update.callback_query.edits[-1][0])
         self.assertIn("☐ receipt", select_update.callback_query.edits[-1][0])
 
@@ -493,7 +493,7 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         self.context.user_data["selected_lesson_words"] = {lesson["id"]: {words[0]["word_id"]}}
         done_update = self._callback_update(f"{TEACHER_LESSON_WORDS_SELECT_DONE_PREFIX}{lesson['id']}")
         await handle_teacher_lesson_callback(done_update, self.context)
-        self.assertIn("📖 Words", done_update.callback_query.edits[-1][0])
+        self.assertIn("📖 Слова", done_update.callback_query.edits[-1][0])
         self.assertNotIn("— выбор", done_update.callback_query.edits[-1][0])
         self.assertNotIn(lesson["id"], self.context.user_data.get("selected_lesson_words", {}))
 
@@ -564,7 +564,7 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.get_lesson_word(lesson["id"], words[0]["word_id"])["translation"], "чек")
         self.assertEqual(self.db.get_lesson_word(lesson["id"], words[1]["word_id"])["translation"], "оно того стоит")
         self.assertIsNone(self.context.user_data.get("pending_ai_translation"))
-        self.assertIn("📖 Words", apply_update.callback_query.edits[-1][0])
+        self.assertIn("📖 Слова", apply_update.callback_query.edits[-1][0])
 
     async def test_ai_translate_invalid_json_fallback_does_not_save(self) -> None:
         import app.handlers.teacher as teacher_module
@@ -681,14 +681,14 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
 
         missing_draft = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_EDIT_PREFIX}{lesson['id']}:{word['word_id']}")
         await handle_teacher_lesson_callback(missing_draft, self.context)
-        self.assertIn("Draft не найден.", missing_draft.callback_query.edits[-1][0])
-        self.assertIn("⬅️ Words", [button.text for row in missing_draft.callback_query.edits[-1][1].inline_keyboard for button in row])
+        self.assertIn("Черновик не найден.", missing_draft.callback_query.edits[-1][0])
+        self.assertIn("⬅️ Слова", [button.text for row in missing_draft.callback_query.edits[-1][1].inline_keyboard for button in row])
 
         self.context.user_data["pending_ai_translation"] = {"lesson_id": lesson["id"], "translations": [{"word_id": word["word_id"], "english": "receipt", "translation": "чек"}]}
         missing_item = self._callback_update(f"{TEACHER_LESSON_WORDS_AI_EDIT_PREFIX}{lesson['id']}:999")
         await handle_teacher_lesson_callback(missing_item, self.context)
-        self.assertIn("Draft item не найден.", missing_item.callback_query.edits[-1][0])
-        self.assertIn("⬅️ К preview", [button.text for row in missing_item.callback_query.edits[-1][1].inline_keyboard for button in row])
+        self.assertIn("Пункт черновика не найден.", missing_item.callback_query.edits[-1][0])
+        self.assertIn("⬅️ К предпросмотру", [button.text for row in missing_item.callback_query.edits[-1][1].inline_keyboard for button in row])
 
     async def test_ai_translation_edit_validation_max_length(self) -> None:
         lesson = self.db.create_teacher_lesson("Lesson 36 — Food", self.teacher["id"])
