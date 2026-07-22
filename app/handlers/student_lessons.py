@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 from app.auth.roles import Role, RoleResolver
 from app.database import Database
 from app.handlers.start import require_user
-from app.handlers.teacher import HOMEWORK_TASK_TYPE_LABELS, _two_int_ids_from_callback
+from app.handlers.teacher import HOMEWORK_TASK_TYPE_LABELS, _three_int_ids_from_callback, _two_int_ids_from_callback
 from app.handlers.training import check_translation_task_answer, start_lesson_words_practice
 from app.keyboards import MY_LESSONS, main_menu_keyboard
 from app.lesson_metadata import lesson_display_name
@@ -17,7 +17,6 @@ from app.lesson_runtime import SECTION_ORDER, LessonRuntimeService, LessonSectio
 from app.lesson_service import ExerciseItemError, HomeworkTaskError, LessonService
 
 _PENDING_HOMEWORK_ANSWER = "pending_homework_answer"
-_PENDING_EXERCISE_ANSWER = "pending_exercise_answer"
 
 STUDENT_LESSONS_LIST_CALLBACK = "student:lessons:list"
 STUDENT_LESSON_OPEN_PREFIX = "student:lesson:open:"
@@ -26,8 +25,10 @@ STUDENT_LESSON_WORDS_CARDS_PREFIX = "student:lesson:words:cards:"
 STUDENT_LESSON_WORDS_TYPE_PREFIX = "student:lesson:words:type:"
 STUDENT_LESSON_WORDS_PREFIX = "student:lesson:words:"
 STUDENT_LESSON_NEXT_STAGE_PREFIX = "student:lesson:next:"
+STUDENT_LESSON_GRAMMAR_COMPLETE_PREFIX = "student:lesson:grammar:complete:"
 STUDENT_LESSON_GRAMMAR_PREFIX = "student:lesson:grammar:"
-STUDENT_LESSON_EXERCISE_TASK_PREFIX = "student:lesson:exercises:task:"
+STUDENT_LESSON_EXERCISE_ANSWER_PREFIX = "student:lesson:exercises:answer:"
+STUDENT_LESSON_EXERCISE_NEXT_PREFIX = "student:lesson:exercises:next:"
 STUDENT_LESSON_EXERCISES_PREFIX = "student:lesson:exercises:"
 STUDENT_LESSON_HOMEWORK_TASK_PREFIX = "student:lesson:homework:task:"
 STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX = "student:lesson:homework:quiz:"
@@ -40,8 +41,10 @@ STUDENT_LESSON_CALLBACK_PREFIXES = (
     STUDENT_LESSON_WORDS_TYPE_PREFIX,
     STUDENT_LESSON_WORDS_PREFIX,
     STUDENT_LESSON_NEXT_STAGE_PREFIX,
+    STUDENT_LESSON_GRAMMAR_COMPLETE_PREFIX,
     STUDENT_LESSON_GRAMMAR_PREFIX,
-    STUDENT_LESSON_EXERCISE_TASK_PREFIX,
+    STUDENT_LESSON_EXERCISE_ANSWER_PREFIX,
+    STUDENT_LESSON_EXERCISE_NEXT_PREFIX,
     STUDENT_LESSON_EXERCISES_PREFIX,
     STUDENT_LESSON_HOMEWORK_TASK_PREFIX,
     STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX,
@@ -141,15 +144,23 @@ _SECTION_OPEN_PREFIXES = {
 }
 
 
+_SECTIONS_WITHOUT_FORMAL_COMPLETION = frozenset({LessonSection.WORDS, LessonSection.HOMEWORK})
+
+
 def _start_section_keyboard(lesson_id: int, section: LessonSection) -> InlineKeyboardMarkup:
     if section is LessonSection.FINISHED:
         return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои уроки", callback_data=STUDENT_LESSONS_LIST_CALLBACK)]])
     open_prefix = _SECTION_OPEN_PREFIXES[section]
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶ Открыть", callback_data=f"{open_prefix}{lesson_id}")],
-        [InlineKeyboardButton("▶ Далее", callback_data=f"{STUDENT_LESSON_NEXT_STAGE_PREFIX}{lesson_id}")],
-        [InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
-    ])
+    rows = [[InlineKeyboardButton("▶ Открыть", callback_data=f"{open_prefix}{lesson_id}")]]
+    if section in _SECTIONS_WITHOUT_FORMAL_COMPLETION:
+        # WORDS has no completion state (existing behavior) and HOMEWORK never
+        # blocks FINISHED (see LessonRuntimeService.is_section_complete), so both
+        # can be skipped unconditionally. GRAMMAR/EXERCISES cannot: advancing past
+        # them requires every item completed/answered, enforced by walking their
+        # per-item flow (▶ Открыть) rather than a blanket skip button.
+        rows.append([InlineKeyboardButton("▶ Далее", callback_data=f"{STUDENT_LESSON_NEXT_STAGE_PREFIX}{lesson_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def _lesson_back_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
@@ -203,68 +214,73 @@ def _words_stage_keyboard(lesson_id: int, has_words: bool) -> InlineKeyboardMark
     ])
 
 
-def _format_grammar_stage(items: list) -> str:
-    if not items:
-        return "\n".join(["📝 Грамматика", "", "В этом уроке пока нет грамматики.", "", "Попросите преподавателя добавить материал."])
-    lines = ["📝 Грамматика", ""]
+def _format_grammar_empty() -> str:
+    return "\n".join(["📝 Грамматика", "", "В этом уроке пока нет грамматики.", "", "Попросите преподавателя добавить материал."])
+
+
+def _first_uncompleted_grammar_item(items: list, progress: dict) -> tuple[int, object] | None:
+    """First grammar item (1-based position, item) the student hasn't confirmed yet, or None if all done."""
     for index, item in enumerate(items, start=1):
-        lines.append(f"{index}. {item['title']}")
+        if int(item["id"]) not in progress:
+            return index, item
+    return None
+
+
+def _format_grammar_card(index: int, total: int, item) -> str:
+    lines = [f"📘 Грамматика {index} из {total}", "", str(item["title"]), "", str(item["explanation"])]
+    if item["example"]:
         lines.append("")
-        lines.append(str(item["explanation"]))
-        if item["example"]:
-            lines.append("")
-            lines.append(f"Example: {item['example']}")
-        lines.append("")
-    return "\n".join(lines).rstrip()
-
-
-def _grammar_stage_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")]])
-
-
-def _exercise_status_icon(answer) -> str:
-    if answer is None:
-        return "⚪"
-    is_correct = answer["is_correct"] if hasattr(answer, "keys") and "is_correct" in answer.keys() else None
-    return "✅" if is_correct else "❌"
-
-
-def _format_exercises_stage(items: list, answers: dict) -> str:
-    if not items:
-        return "\n".join(["✏️ Упражнения", "", "В этом уроке пока нет упражнений.", "", "Попросите преподавателя добавить упражнения."])
-    lines = ["✏️ Упражнения", ""]
-    for index, item in enumerate(items, start=1):
-        icon = _exercise_status_icon(answers.get(int(item["id"])))
-        prompt = str(item["prompt"])
-        short_prompt = prompt if len(prompt) <= 50 else prompt[:47] + "…"
-        lines.append(f"{index}. {icon} {short_prompt}")
+        lines.append(f"Example: {item['example']}")
     return "\n".join(lines)
 
 
-def _exercises_stage_keyboard(lesson_id: int, items: list, answers: dict) -> InlineKeyboardMarkup:
+def _grammar_card_keyboard(lesson_id: int, item_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("▶ Далее", callback_data=f"{STUDENT_LESSON_GRAMMAR_COMPLETE_PREFIX}{lesson_id}:{item_id}")],
+        [InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
+    ])
+
+
+def _format_exercises_empty() -> str:
+    return "\n".join(["✏️ Упражнения", "", "В этом уроке пока нет упражнений.", "", "Попросите преподавателя добавить упражнения."])
+
+
+def _first_unanswered_exercise(items: list, answers: dict) -> tuple[int, object] | None:
+    """First exercise (1-based position, item) without a saved first attempt, or None if all done."""
+    for index, item in enumerate(items, start=1):
+        if int(item["id"]) not in answers:
+            return index, item
+    return None
+
+
+def _format_exercise_question(index: int, total: int, item) -> str:
+    return "\n".join([f"✏️ Упражнение {index} из {total}", "", str(item["prompt"])])
+
+
+def _exercise_options_keyboard(lesson_id: int, item_id: int, options: list[str]) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(
-            f"{index}. {_exercise_status_icon(answers.get(int(item['id'])))} {str(item['prompt'])[:30]}",
-            callback_data=f"{STUDENT_LESSON_EXERCISE_TASK_PREFIX}{lesson_id}:{item['id']}",
-        )]
-        for index, item in enumerate(items, start=1)
+        [InlineKeyboardButton(option, callback_data=f"{STUDENT_LESSON_EXERCISE_ANSWER_PREFIX}{lesson_id}:{item_id}:{option_index}")]
+        for option_index, option in enumerate(options)
     ]
     rows.append([InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")])
     return InlineKeyboardMarkup(rows)
 
 
-def _format_exercise_task(item, answer=None) -> str:
-    lines = ["✏️ Упражнение", "", str(item["prompt"]), "", "✍️ Напишите ответ в чат."]
-    if answer is not None:
-        is_correct = bool(answer["is_correct"]) if hasattr(answer, "keys") and "is_correct" in answer.keys() else None
+def _format_exercise_result(item, answer) -> str:
+    options = json.loads(item["options_json"])
+    is_correct = bool(answer["is_correct"])
+    lines = ["✅ Верно!" if is_correct else "❌ Неверно."]
+    if not is_correct:
+        correct_index = int(item["correct_option_index"])
+        lines.append(f"Правильный вариант: {options[correct_index]}")
+    if item["explanation"]:
         lines.append("")
-        lines.append(f"Ваш последний ответ: {answer['answer']}")
-        lines.append("✅ Верно" if is_correct else "❌ Неверно")
+        lines.append(str(item["explanation"]))
     return "\n".join(lines)
 
 
-def _exercise_task_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Упражнения", callback_data=f"{STUDENT_LESSON_EXERCISES_PREFIX}{lesson_id}")]])
+def _exercise_result_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("▶ Далее", callback_data=f"{STUDENT_LESSON_EXERCISE_NEXT_PREFIX}{lesson_id}")]])
 
 
 def _homework_status_icon(answer) -> str:
@@ -394,35 +410,54 @@ async def _handle_pending_homework_answer(update: Update, context: ContextTypes.
     return True
 
 
-async def _handle_pending_exercise_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, pending: dict) -> bool:
-    user = await require_user(update, context)
-    if user is None or update.effective_message is None:
-        return False
-    lesson_id = int(pending.get("lesson_id") or 0)
-    exercise_id = int(pending.get("exercise_id") or 0)
-    repo = _repository(context)
-    item = repo.get_exercise_item(lesson_id, exercise_id)
-    if item is None:
-        context.user_data.pop(_PENDING_EXERCISE_ANSWER, None)
-        return False
+async def _advance_and_render(query, lesson_id: int, student_username: str, repo: LessonRepository) -> None:
+    """The only place a stage transition is committed: delegates to
+    LessonRuntimeService.advance_section, which enforces the completion gate
+    (GRAMMAR/EXERCISES only advance once every item is done) and returns the
+    current section unchanged if the gate isn't satisfied yet."""
+    next_section = LessonRuntimeService(repo).advance_section(lesson_id, student_username)
+    if next_section is None:
+        await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+        return
+    summary = repo.get_student_lesson(lesson_id, student_username)
+    await query.edit_message_text(_format_next_section(summary, next_section), reply_markup=_start_section_keyboard(lesson_id, next_section))
 
-    answer_text = update.effective_message.text or ""
-    service = LessonService(repo)
-    try:
-        is_correct, _row = service.submit_exercise_answer(lesson_id, exercise_id, int(user["id"]), answer_text)
-    except ExerciseItemError as error:
-        await update.effective_message.reply_text(str(error))
-        return True
 
-    context.user_data.pop(_PENDING_EXERCISE_ANSWER, None)
-    if is_correct:
-        lines = ["✅ Верно!"]
-    else:
-        lines = ["❌ Неверно.", f"Правильный ответ: {item['expected_answer']}"]
-        if item["hint"]:
-            lines.append(f"Подсказка: {item['hint']}")
-    await update.effective_message.reply_text("\n".join(lines), reply_markup=_exercise_task_keyboard(lesson_id))
-    return True
+async def _render_grammar_card_or_advance(query, lesson_id: int, student_username: str, repo: LessonRepository) -> None:
+    summary = repo.get_student_lesson(lesson_id, student_username)
+    if summary is None:
+        await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+        return
+    items = repo.list_grammar_items(lesson_id)
+    if not items:
+        await query.edit_message_text(_format_grammar_empty(), reply_markup=_lesson_back_keyboard(lesson_id))
+        return
+    progress = repo.list_grammar_progress(int(summary["assignment_id"]))
+    found = _first_uncompleted_grammar_item(items, progress)
+    if found is None:
+        await _advance_and_render(query, lesson_id, student_username, repo)
+        return
+    index, item = found
+    await query.edit_message_text(_format_grammar_card(index, len(items), item), reply_markup=_grammar_card_keyboard(lesson_id, item["id"]))
+
+
+async def _render_exercise_card_or_advance(query, lesson_id: int, student_username: str, repo: LessonRepository) -> None:
+    summary = repo.get_student_lesson(lesson_id, student_username)
+    if summary is None:
+        await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+        return
+    items = repo.list_exercise_items(lesson_id)
+    if not items:
+        await query.edit_message_text(_format_exercises_empty(), reply_markup=_lesson_back_keyboard(lesson_id))
+        return
+    answers = repo.list_exercise_answers(int(summary["assignment_id"]))
+    found = _first_unanswered_exercise(items, answers)
+    if found is None:
+        await _advance_and_render(query, lesson_id, student_username, repo)
+        return
+    index, item = found
+    options = json.loads(item["options_json"])
+    await query.edit_message_text(_format_exercise_question(index, len(items), item), reply_markup=_exercise_options_keyboard(lesson_id, item["id"], options))
 
 
 async def handle_student_lesson_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -431,9 +466,6 @@ async def handle_student_lesson_message(update: Update, context: ContextTypes.DE
     pending_homework = context.user_data.get(_PENDING_HOMEWORK_ANSWER)
     if pending_homework:
         return await _handle_pending_homework_answer(update, context, pending_homework)
-    pending_exercise = context.user_data.get(_PENDING_EXERCISE_ANSWER)
-    if pending_exercise:
-        return await _handle_pending_exercise_answer(update, context, pending_exercise)
     if update.effective_message.text == MY_LESSONS:
         await show_student_lessons(update, context)
         return True
@@ -493,12 +525,7 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
         if summary is None:
             await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
             return
-        next_section = LessonRuntimeService(repo).advance_section(lesson_id, user["username"])
-        if next_section is None:
-            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
-            return
-        summary = repo.get_student_lesson(lesson_id, user["username"])
-        await query.edit_message_text(_format_next_section(summary, next_section), reply_markup=_start_section_keyboard(lesson_id, next_section))
+        await _advance_and_render(query, lesson_id, user["username"], repo)
         return
     if data.startswith(STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX):
         payload = data.removeprefix(STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX)
@@ -586,6 +613,22 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
         has_words = _count(summary, "words_count") > 0
         await query.edit_message_text(_format_words_stage(summary), reply_markup=_words_stage_keyboard(lesson_id, has_words=has_words))
         return
+    if data.startswith(STUDENT_LESSON_GRAMMAR_COMPLETE_PREFIX):
+        ids = _two_int_ids_from_callback(data, STUDENT_LESSON_GRAMMAR_COMPLETE_PREFIX)
+        if ids is None:
+            return
+        lesson_id, item_id = ids
+        summary = repo.get_student_lesson(lesson_id, user["username"])
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        try:
+            LessonService(repo).complete_grammar_item(lesson_id, int(summary["assignment_id"]), item_id)
+        except ValueError:
+            await query.edit_message_text("Тема не найдена.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        await _render_grammar_card_or_advance(query, lesson_id, user["username"], repo)
+        return
     if data.startswith(STUDENT_LESSON_GRAMMAR_PREFIX):
         lesson_id_text = data.removeprefix(STUDENT_LESSON_GRAMMAR_PREFIX)
         lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
@@ -593,25 +636,39 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
         if summary is None:
             await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
             return
-        items = repo.list_grammar_items(lesson_id)
-        await query.edit_message_text(_format_grammar_stage(items), reply_markup=_grammar_stage_keyboard(lesson_id))
+        await _render_grammar_card_or_advance(query, lesson_id, user["username"], repo)
         return
-    if data.startswith(STUDENT_LESSON_EXERCISE_TASK_PREFIX):
-        ids = _two_int_ids_from_callback(data, STUDENT_LESSON_EXERCISE_TASK_PREFIX)
+    if data.startswith(STUDENT_LESSON_EXERCISE_ANSWER_PREFIX):
+        ids = _three_int_ids_from_callback(data, STUDENT_LESSON_EXERCISE_ANSWER_PREFIX)
         if ids is None:
             return
-        lesson_id, exercise_id = ids
+        lesson_id, item_id, option_index = ids
         summary = repo.get_student_lesson(lesson_id, user["username"])
         if summary is None:
             await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
             return
-        item = repo.get_exercise_item(lesson_id, exercise_id)
-        if item is None:
+        try:
+            _is_correct, answer = LessonService(repo).submit_exercise_answer(
+                lesson_id, item_id, int(summary["assignment_id"]), int(user["id"]), option_index
+            )
+        except ExerciseItemError:
+            # Invalid option index - stale/crafted callback, silently ignored like
+            # homework's quiz answer handler does for out-of-range choices.
+            return
+        except ValueError:
             await query.edit_message_text("Упражнение не найдено.", reply_markup=_lesson_unavailable_keyboard())
             return
-        answers = repo.list_latest_exercise_answers(lesson_id, int(user["id"]))
-        context.user_data[_PENDING_EXERCISE_ANSWER] = {"lesson_id": lesson_id, "exercise_id": exercise_id}
-        await query.edit_message_text(_format_exercise_task(item, answers.get(exercise_id)), reply_markup=_exercise_task_keyboard(lesson_id))
+        item = repo.get_exercise_item(lesson_id, item_id)
+        await query.edit_message_text(_format_exercise_result(item, answer), reply_markup=_exercise_result_keyboard(lesson_id))
+        return
+    if data.startswith(STUDENT_LESSON_EXERCISE_NEXT_PREFIX):
+        lesson_id_text = data.removeprefix(STUDENT_LESSON_EXERCISE_NEXT_PREFIX)
+        lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
+        summary = repo.get_student_lesson(lesson_id, user["username"]) if lesson_id > 0 else None
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        await _render_exercise_card_or_advance(query, lesson_id, user["username"], repo)
         return
     if data.startswith(STUDENT_LESSON_EXERCISES_PREFIX):
         lesson_id_text = data.removeprefix(STUDENT_LESSON_EXERCISES_PREFIX)
@@ -620,8 +677,5 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
         if summary is None:
             await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
             return
-        context.user_data.pop(_PENDING_EXERCISE_ANSWER, None)
-        items = repo.list_exercise_items(lesson_id)
-        answers = repo.list_latest_exercise_answers(lesson_id, int(user["id"]))
-        await query.edit_message_text(_format_exercises_stage(items, answers), reply_markup=_exercises_stage_keyboard(lesson_id, items, answers))
+        await _render_exercise_card_or_advance(query, lesson_id, user["username"], repo)
         return

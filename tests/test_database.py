@@ -488,6 +488,10 @@ class LessonGrammarExercisesDatabaseTests(unittest.TestCase):
         self.db.close()
         self.temp_dir.cleanup()
 
+    def _assignment_id(self) -> int:
+        self.db.assign_lesson_to_student(self.lesson["id"], "student", self.teacher["id"])
+        return int(self.db.get_active_lesson_assignment(self.lesson["id"])["id"])
+
     def test_add_and_list_grammar_items_orders_by_position(self) -> None:
         self.db.add_grammar_item(self.lesson["id"], "Second", "Explanation 2", position=1)
         self.db.add_grammar_item(self.lesson["id"], "First", "Explanation 1", position=0)
@@ -512,17 +516,62 @@ class LessonGrammarExercisesDatabaseTests(unittest.TestCase):
         self.assertIsNone(self.db.get_grammar_item(self.lesson["id"], item["id"]))
         self.assertFalse(self.db.delete_grammar_item(self.lesson["id"], item["id"]))
 
+    def test_delete_grammar_item_removes_progress(self) -> None:
+        assignment_id = self._assignment_id()
+        item = self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
+        self.db.mark_grammar_item_completed(assignment_id, item["id"])
+
+        self.db.delete_grammar_item(self.lesson["id"], item["id"])
+
+        self.assertEqual(self.db.fetchall("SELECT * FROM student_grammar_progress WHERE grammar_item_id = ?", (item["id"],)), [])
+
+    def test_mark_grammar_item_completed_is_idempotent(self) -> None:
+        assignment_id = self._assignment_id()
+        item = self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
+
+        first = self.db.mark_grammar_item_completed(assignment_id, item["id"])
+        second = self.db.mark_grammar_item_completed(assignment_id, item["id"])
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["completed_at"], second["completed_at"])
+        rows = self.db.fetchall(
+            "SELECT * FROM student_grammar_progress WHERE assignment_id = ? AND grammar_item_id = ?",
+            (assignment_id, item["id"]),
+        )
+        self.assertEqual(len(rows), 1)
+
+    def test_list_grammar_progress_is_scoped_to_assignment(self) -> None:
+        item = self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
+        first_assignment_id = self._assignment_id()
+        self.db.mark_grammar_item_completed(first_assignment_id, item["id"])
+
+        self.db.unassign_lesson(self.lesson["id"])
+        second_assignment_id = self._assignment_id()
+
+        self.assertNotEqual(first_assignment_id, second_assignment_id)
+        self.assertEqual(set(self.db.list_grammar_progress(first_assignment_id).keys()), {item["id"]})
+        self.assertEqual(self.db.list_grammar_progress(second_assignment_id), {})
+
     def test_add_and_list_exercise_items_orders_by_position(self) -> None:
-        self.db.add_exercise_item(self.lesson["id"], "Second prompt", "answer2", position=1)
-        self.db.add_exercise_item(self.lesson["id"], "First prompt", "answer1", position=0)
+        self.db.add_exercise_item(self.lesson["id"], "Second prompt", '["a", "b"]', 0, position=1)
+        self.db.add_exercise_item(self.lesson["id"], "First prompt", '["a", "b"]', 0, position=0)
 
         items = self.db.list_exercise_items(self.lesson["id"])
 
         self.assertEqual([item["prompt"] for item in items], ["First prompt", "Second prompt"])
 
+    def test_add_exercise_item_stores_options_and_correct_index(self) -> None:
+        item = self.db.add_exercise_item(self.lesson["id"], "I ___ every day.", '["work", "works"]', 0, "Base form with I.")
+
+        self.assertEqual(item["prompt"], "I ___ every day.")
+        self.assertEqual(item["options_json"], '["work", "works"]')
+        self.assertEqual(item["correct_option_index"], 0)
+        self.assertEqual(item["explanation"], "Base form with I.")
+
     def test_delete_exercise_item_removes_item_and_answers(self) -> None:
-        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
-        self.db.submit_exercise_answer(item["id"], self.student["id"], "answer", True)
+        assignment_id = self._assignment_id()
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", '["a", "b"]', 0)
+        self.db.submit_exercise_answer(assignment_id, item["id"], self.student["id"], 0, True)
 
         deleted = self.db.delete_exercise_item(self.lesson["id"], item["id"])
 
@@ -531,39 +580,73 @@ class LessonGrammarExercisesDatabaseTests(unittest.TestCase):
         self.assertEqual(self.db.fetchall("SELECT * FROM lesson_exercise_answers WHERE exercise_id = ?", (item["id"],)), [])
 
     def test_submit_exercise_answer_records_row(self) -> None:
-        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
+        assignment_id = self._assignment_id()
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", '["a", "b"]', 0)
 
-        answer = self.db.submit_exercise_answer(item["id"], self.student["id"], "answer", True)
+        answer = self.db.submit_exercise_answer(assignment_id, item["id"], self.student["id"], 0, True)
 
+        self.assertEqual(answer["assignment_id"], assignment_id)
         self.assertEqual(answer["exercise_id"], item["id"])
         self.assertEqual(answer["user_id"], self.student["id"])
+        self.assertEqual(answer["selected_option_index"], 0)
         self.assertEqual(answer["is_correct"], 1)
 
-    def test_list_latest_exercise_answers_keeps_only_newest_per_item(self) -> None:
-        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
-        other_item = self.db.add_exercise_item(self.lesson["id"], "Other prompt", "other")
+    def test_submit_exercise_answer_keeps_first_attempt(self) -> None:
+        assignment_id = self._assignment_id()
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", '["a", "b"]', 0)
+
+        first = self.db.submit_exercise_answer(assignment_id, item["id"], self.student["id"], 0, True)
+        second = self.db.submit_exercise_answer(assignment_id, item["id"], self.student["id"], 1, False)
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(second["selected_option_index"], 0)
+        self.assertEqual(second["is_correct"], 1)
+
+    def test_list_exercise_answers_is_scoped_to_assignment(self) -> None:
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", '["a", "b"]', 0)
+        first_assignment_id = self._assignment_id()
+        self.db.submit_exercise_answer(first_assignment_id, item["id"], self.student["id"], 0, True)
+
+        self.db.unassign_lesson(self.lesson["id"])
+        second_assignment_id = self._assignment_id()
+
+        self.assertNotEqual(first_assignment_id, second_assignment_id)
+        self.assertEqual(set(self.db.list_exercise_answers(first_assignment_id).keys()), {item["id"]})
+        self.assertEqual(self.db.list_exercise_answers(second_assignment_id), {})
+
+    def test_get_exercise_item_requires_matching_lesson(self) -> None:
         other_lesson = self.db.create_teacher_lesson("Lesson 42 — Travel", self.teacher["id"])
-        other_lesson_item = self.db.add_exercise_item(other_lesson["id"], "Different lesson", "x")
+        other_item = self.db.add_exercise_item(other_lesson["id"], "Different lesson", '["x", "y"]', 0)
 
-        self.db.submit_exercise_answer(item["id"], self.student["id"], "wrong", False)
-        self.db.submit_exercise_answer(item["id"], self.student["id"], "answer", True)
-        self.db.submit_exercise_answer(other_lesson_item["id"], self.student["id"], "irrelevant", True)
-
-        answers = self.db.list_latest_exercise_answers(self.lesson["id"], self.student["id"])
-
-        self.assertEqual(set(answers.keys()), {item["id"]})
-        self.assertEqual(answers[item["id"]]["answer"], "answer")
-        self.assertEqual(answers[item["id"]]["is_correct"], 1)
-        self.assertNotIn(other_item["id"], answers)
+        self.assertIsNone(self.db.get_exercise_item(self.lesson["id"], other_item["id"]))
+        self.assertIsNotNone(self.db.get_exercise_item(other_lesson["id"], other_item["id"]))
 
     def test_get_lesson_summary_reflects_real_grammar_and_exercise_counts(self) -> None:
         self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
-        self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
+        self.db.add_exercise_item(self.lesson["id"], "Prompt", '["a", "b"]', 0)
 
         summary = self.db.get_lesson_summary(self.lesson["id"])
 
         self.assertEqual(summary["grammar_count"], 1)
         self.assertEqual(summary["exercises_count"], 1)
+
+    def test_get_student_lesson_reflects_real_completed_counts(self) -> None:
+        assignment_id = self._assignment_id()
+        grammar_item = self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
+        self.db.add_grammar_item(self.lesson["id"], "Title2", "Explanation2")
+        exercise_item = self.db.add_exercise_item(self.lesson["id"], "Prompt", '["a", "b"]', 0)
+
+        summary_before = self.db.get_student_lesson(self.lesson["id"], "student")
+        self.assertEqual(summary_before["grammar_completed_count"], 0)
+        self.assertEqual(summary_before["exercises_completed_count"], 0)
+        self.assertEqual(summary_before["assignment_id"], assignment_id)
+
+        self.db.mark_grammar_item_completed(assignment_id, grammar_item["id"])
+        self.db.submit_exercise_answer(assignment_id, exercise_item["id"], self.student["id"], 0, True)
+
+        summary_after = self.db.get_student_lesson(self.lesson["id"], "student")
+        self.assertEqual(summary_after["grammar_completed_count"], 1)
+        self.assertEqual(summary_after["exercises_completed_count"], 1)
 
     def test_set_student_lesson_section_persists_and_finishes(self) -> None:
         self.db.assign_lesson_to_student(self.lesson["id"], "student", self.teacher["id"])
@@ -587,6 +670,39 @@ class LessonGrammarExercisesDatabaseTests(unittest.TestCase):
 
         columns_after = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lesson_students)")}
         self.assertIn("current_section", columns_after)
+
+    def test_exercise_tables_are_rebuilt_from_old_free_text_schema(self) -> None:
+        self.db.execute(
+            """
+            CREATE TABLE lesson_exercise_items_old (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                prompt TEXT NOT NULL,
+                expected_answer TEXT NOT NULL,
+                hint TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        self.db.execute("DROP TABLE lesson_exercise_items")
+        self.db.execute("ALTER TABLE lesson_exercise_items_old RENAME TO lesson_exercise_items")
+        columns_before = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lesson_exercise_items)")}
+        self.assertIn("expected_answer", columns_before)
+
+        self.db.init_schema()
+        self.db.init_schema()
+
+        columns_after = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lesson_exercise_items)")}
+        self.assertNotIn("expected_answer", columns_after)
+        self.assertIn("options_json", columns_after)
+        self.assertIn("correct_option_index", columns_after)
+        answer_columns = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lesson_exercise_answers)")}
+        self.assertIn("assignment_id", answer_columns)
+        # New schema still works after the rebuild.
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", '["a", "b"]', 0)
+        self.assertEqual(self.db.list_exercise_items(self.lesson["id"]), [item])
 
 
 class TeacherLessonListTests(unittest.TestCase):

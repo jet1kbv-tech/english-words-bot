@@ -187,19 +187,30 @@ class Database:
                 lesson_id INTEGER NOT NULL,
                 position INTEGER NOT NULL DEFAULT 0,
                 prompt TEXT NOT NULL,
-                expected_answer TEXT NOT NULL,
-                hint TEXT,
+                options_json TEXT NOT NULL,
+                correct_option_index INTEGER NOT NULL,
+                explanation TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS lesson_exercise_answers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignment_id INTEGER NOT NULL,
                 exercise_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
-                answer TEXT NOT NULL,
+                selected_option_index INTEGER NOT NULL,
                 is_correct INTEGER NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                UNIQUE(assignment_id, exercise_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS student_grammar_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignment_id INTEGER NOT NULL,
+                grammar_item_id INTEGER NOT NULL,
+                completed_at TEXT NOT NULL,
+                UNIQUE(assignment_id, grammar_item_id)
             );
 
             CREATE TABLE IF NOT EXISTS user_tutorials (
@@ -227,6 +238,7 @@ class Database:
         self._ensure_daily_activity_xp_column()
         self._ensure_lessons_schema()
         self._ensure_lesson_students_schema()
+        self._ensure_lesson_exercise_schema()
         self._ensure_tutorial_notifications_schema()
 
     def _ensure_daily_activity_xp_column(self) -> None:
@@ -308,6 +320,63 @@ class Database:
         columns = {row["name"] for row in self.fetchall("PRAGMA table_info(lesson_students)")}
         if "current_section" not in columns:
             self.execute("ALTER TABLE lesson_students ADD COLUMN current_section TEXT NOT NULL DEFAULT 'WORDS'")
+
+    def _ensure_lesson_exercise_schema(self) -> None:
+        """Rebuild lesson_exercise_items/lesson_exercise_answers if they still have the
+        pre-single-choice free-text columns (expected_answer/hint, answer with no
+        assignment_id) from the first cut of this feature. Exercises were not yet in
+        real use, so a clean rebuild (dropping any placeholder rows) is safe and
+        avoids a lossy column-by-column migration for a format that acceptance
+        criteria replaced outright."""
+        item_columns = {row["name"] for row in self.fetchall("PRAGMA table_info(lesson_exercise_items)")}
+        if item_columns and "expected_answer" in item_columns:
+            self._connection.executescript(
+                """
+                DROP TABLE IF EXISTS lesson_exercise_answers;
+                DROP TABLE IF EXISTS lesson_exercise_items;
+                CREATE TABLE lesson_exercise_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    lesson_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    prompt TEXT NOT NULL,
+                    options_json TEXT NOT NULL,
+                    correct_option_index INTEGER NOT NULL,
+                    explanation TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE lesson_exercise_answers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    assignment_id INTEGER NOT NULL,
+                    exercise_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    selected_option_index INTEGER NOT NULL,
+                    is_correct INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(assignment_id, exercise_id)
+                );
+                """
+            )
+            self._connection.commit()
+            return
+        answer_columns = {row["name"] for row in self.fetchall("PRAGMA table_info(lesson_exercise_answers)")}
+        if answer_columns and "assignment_id" not in answer_columns:
+            self._connection.executescript(
+                """
+                DROP TABLE IF EXISTS lesson_exercise_answers;
+                CREATE TABLE lesson_exercise_answers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    assignment_id INTEGER NOT NULL,
+                    exercise_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    selected_option_index INTEGER NOT NULL,
+                    is_correct INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(assignment_id, exercise_id)
+                );
+                """
+            )
+            self._connection.commit()
 
     def _ensure_tutorial_notifications_schema(self) -> None:
         self._connection.executescript(
@@ -617,12 +686,15 @@ class Database:
         return self.fetchone(
             """
             SELECT lessons.*, lesson_students.assigned_at AS assigned_at,
+                   lesson_students.id AS assignment_id,
                    lesson_students.current_section AS current_section,
                    (SELECT COUNT(*) FROM lesson_words WHERE lesson_id = lessons.id) AS words_count,
                    (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_tasks_count,
                    (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_count,
                    (SELECT COUNT(*) FROM lesson_grammar_items WHERE lesson_id = lessons.id) AS grammar_count,
-                   (SELECT COUNT(*) FROM lesson_exercise_items WHERE lesson_id = lessons.id) AS exercises_count
+                   (SELECT COUNT(*) FROM lesson_exercise_items WHERE lesson_id = lessons.id) AS exercises_count,
+                   (SELECT COUNT(*) FROM student_grammar_progress WHERE assignment_id = lesson_students.id) AS grammar_completed_count,
+                   (SELECT COUNT(*) FROM lesson_exercise_answers WHERE assignment_id = lesson_students.id) AS exercises_completed_count
             FROM lesson_students
             JOIN lessons ON lessons.id = lesson_students.lesson_id
             WHERE lessons.id = ?
@@ -892,22 +964,54 @@ class Database:
         )
 
     def delete_grammar_item(self, lesson_id: int, item_id: int) -> bool:
+        if self.get_grammar_item(lesson_id, item_id) is None:
+            return False
+        self.execute("DELETE FROM student_grammar_progress WHERE grammar_item_id = ?", (item_id,))
         cursor = self.execute(
             "DELETE FROM lesson_grammar_items WHERE id = ? AND lesson_id = ?",
             (item_id, lesson_id),
         )
         return cursor.rowcount > 0
 
+    def mark_grammar_item_completed(self, assignment_id: int, grammar_item_id: int) -> sqlite3.Row:
+        self.execute(
+            """
+            INSERT OR IGNORE INTO student_grammar_progress (assignment_id, grammar_item_id, completed_at)
+            VALUES (?, ?, ?)
+            """,
+            (assignment_id, grammar_item_id, utc_now()),
+        )
+        row = self.fetchone(
+            "SELECT * FROM student_grammar_progress WHERE assignment_id = ? AND grammar_item_id = ?",
+            (assignment_id, grammar_item_id),
+        )
+        if row is None:
+            raise RuntimeError("Failed to record grammar item progress")
+        return row
+
+    def list_grammar_progress(self, assignment_id: int) -> dict[int, sqlite3.Row]:
+        rows = self.fetchall(
+            "SELECT * FROM student_grammar_progress WHERE assignment_id = ?",
+            (assignment_id,),
+        )
+        return {int(row["grammar_item_id"]): row for row in rows}
+
     def add_exercise_item(
-        self, lesson_id: int, prompt: str, expected_answer: str, hint: str | None = None, position: int = 0
+        self,
+        lesson_id: int,
+        prompt: str,
+        options_json: str,
+        correct_option_index: int,
+        explanation: str | None = None,
+        position: int = 0,
     ) -> sqlite3.Row:
         now = utc_now()
         cursor = self.execute(
             """
-            INSERT INTO lesson_exercise_items (lesson_id, position, prompt, expected_answer, hint, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO lesson_exercise_items (lesson_id, position, prompt, options_json, correct_option_index, explanation, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (lesson_id, position, prompt, expected_answer, hint, now, now),
+            (lesson_id, position, prompt, options_json, correct_option_index, explanation, now, now),
         )
         item = self.fetchone("SELECT * FROM lesson_exercise_items WHERE id = ?", (cursor.lastrowid,))
         if item is None:
@@ -936,35 +1040,37 @@ class Database:
         )
         return cursor.rowcount > 0
 
-    def submit_exercise_answer(self, exercise_id: int, user_id: int, answer: str, is_correct: bool) -> sqlite3.Row:
-        cursor = self.execute(
+    def submit_exercise_answer(
+        self, assignment_id: int, exercise_id: int, user_id: int, selected_option_index: int, is_correct: bool
+    ) -> sqlite3.Row:
+        """Records the student's first attempt for (assignment, exercise); later calls are no-ops.
+
+        `INSERT OR IGNORE` relies on `UNIQUE(assignment_id, exercise_id)`: if a row already
+        exists the insert is silently dropped and the pre-existing (first) answer is what
+        gets returned below, regardless of what `selected_option_index` this call passed.
+        """
+        self.execute(
             """
-            INSERT INTO lesson_exercise_answers (exercise_id, user_id, answer, is_correct, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO lesson_exercise_answers (assignment_id, exercise_id, user_id, selected_option_index, is_correct, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (exercise_id, user_id, answer, int(is_correct), utc_now()),
+            (assignment_id, exercise_id, user_id, selected_option_index, int(is_correct), utc_now()),
         )
-        row = self.fetchone("SELECT * FROM lesson_exercise_answers WHERE id = ?", (cursor.lastrowid,))
+        row = self.fetchone(
+            "SELECT * FROM lesson_exercise_answers WHERE assignment_id = ? AND exercise_id = ?",
+            (assignment_id, exercise_id),
+        )
         if row is None:
             raise RuntimeError("Failed to record exercise answer")
         return row
 
-    def list_latest_exercise_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
-        """Latest answer per exercise item for a student, keyed by exercise_id."""
+    def list_exercise_answers(self, assignment_id: int) -> dict[int, sqlite3.Row]:
+        """First (and only) answer per exercise item for this assignment, keyed by exercise_id."""
         rows = self.fetchall(
-            """
-            SELECT lesson_exercise_answers.*
-            FROM lesson_exercise_answers
-            JOIN lesson_exercise_items ON lesson_exercise_items.id = lesson_exercise_answers.exercise_id
-            WHERE lesson_exercise_items.lesson_id = ? AND lesson_exercise_answers.user_id = ?
-            ORDER BY lesson_exercise_answers.id ASC
-            """,
-            (lesson_id, user_id),
+            "SELECT * FROM lesson_exercise_answers WHERE assignment_id = ?",
+            (assignment_id,),
         )
-        latest: dict[int, sqlite3.Row] = {}
-        for row in rows:
-            latest[int(row["exercise_id"])] = row
-        return latest
+        return {int(row["exercise_id"]): row for row in rows}
 
     def set_student_lesson_section(self, lesson_id: int, student_username: str, section: str) -> None:
         normalized = self.normalize_username(student_username)

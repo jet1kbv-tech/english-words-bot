@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 
 from app.lesson_repository import LessonRepository
@@ -17,8 +16,10 @@ MAX_QUIZ_OPTION_LENGTH = 200
 MAX_GRAMMAR_TITLE_LENGTH = 200
 MAX_GRAMMAR_TEXT_LENGTH = 1500
 MAX_EXERCISE_PROMPT_LENGTH = 500
-MAX_EXERCISE_ANSWER_LENGTH = 200
-MAX_EXERCISE_HINT_LENGTH = 500
+MIN_EXERCISE_OPTIONS = 2
+MAX_EXERCISE_OPTIONS = 6
+MAX_EXERCISE_OPTION_LENGTH = 200
+MAX_EXERCISE_EXPLANATION_LENGTH = 500
 
 HOMEWORK_TASK_TYPE_TRANSLATION = "translation"
 HOMEWORK_TASK_TYPE_FREE = "free"
@@ -48,10 +49,6 @@ def _validated_prompt(prompt: str, *, empty_message: str, max_length: int = MAX_
     if len(prompt) > max_length:
         raise HomeworkTaskError(f"Слишком длинный текст: максимум {max_length} символов.")
     return prompt
-
-
-def _normalize_exercise_answer(value: str) -> str:
-    return re.sub(r"\s+", " ", value.lower().replace("ё", "е")).strip()
 
 
 def normalize_lesson_words_import(text: str) -> list[str]:
@@ -219,21 +216,37 @@ class LessonService:
     def delete_grammar_item(self, lesson_id: int, item_id: int) -> bool:
         return self.repository.delete_grammar_item(lesson_id, item_id)
 
+    def complete_grammar_item(self, lesson_id: int, assignment_id: int, item_id: int) -> sqlite3.Row:
+        if self.repository.get_grammar_item(lesson_id, item_id) is None:
+            raise ValueError("grammar item not found")
+        return self.repository.mark_grammar_item_completed(assignment_id, item_id)
+
+    def list_grammar_progress(self, assignment_id: int) -> dict[int, sqlite3.Row]:
+        return self.repository.list_grammar_progress(assignment_id)
+
     def _next_exercise_position(self, lesson_id: int) -> int:
         return len(self.repository.list_exercise_items(lesson_id))
 
-    def add_exercise_item(self, lesson_id: int, prompt: str, expected_answer: str, hint: str | None = None) -> sqlite3.Row:
+    def add_exercise_item(
+        self, lesson_id: int, prompt: str, options: list[str], correct_option_index: int, explanation: str | None = None
+    ) -> sqlite3.Row:
         prompt = _validated_prompt(prompt, empty_message="Задание не может быть пустым.", max_length=MAX_EXERCISE_PROMPT_LENGTH)
-        expected_answer = expected_answer.strip()
-        if not expected_answer:
-            raise ExerciseItemError("Ответ не может быть пустым.")
-        if len(expected_answer) > MAX_EXERCISE_ANSWER_LENGTH:
-            raise ExerciseItemError(f"Слишком длинный ответ: максимум {MAX_EXERCISE_ANSWER_LENGTH} символов.")
-        hint = hint.strip() if hint else None
-        if hint and len(hint) > MAX_EXERCISE_HINT_LENGTH:
-            raise ExerciseItemError(f"Слишком длинная подсказка: максимум {MAX_EXERCISE_HINT_LENGTH} символов.")
+        cleaned = [option.strip() for option in options if option.strip()]
+        if len(cleaned) < MIN_EXERCISE_OPTIONS:
+            raise ExerciseItemError(f"Нужно минимум {MIN_EXERCISE_OPTIONS} варианта, каждый с новой строки.")
+        if len(cleaned) > MAX_EXERCISE_OPTIONS:
+            raise ExerciseItemError(f"Слишком много вариантов: максимум {MAX_EXERCISE_OPTIONS}.")
+        for option in cleaned:
+            if len(option) > MAX_EXERCISE_OPTION_LENGTH:
+                raise ExerciseItemError(f"Слишком длинный вариант: максимум {MAX_EXERCISE_OPTION_LENGTH} символов.")
+        if not (0 <= correct_option_index < len(cleaned)):
+            raise ExerciseItemError("Номер правильного варианта вне диапазона.")
+        explanation = explanation.strip() if explanation else None
+        if explanation and len(explanation) > MAX_EXERCISE_EXPLANATION_LENGTH:
+            raise ExerciseItemError(f"Слишком длинное объяснение: максимум {MAX_EXERCISE_EXPLANATION_LENGTH} символов.")
+        options_json = json.dumps(cleaned, ensure_ascii=False)
         position = self._next_exercise_position(lesson_id)
-        return self.repository.add_exercise_item(lesson_id, prompt, expected_answer, hint or None, position)
+        return self.repository.add_exercise_item(lesson_id, prompt, options_json, correct_option_index, explanation, position)
 
     def list_exercise_items(self, lesson_id: int) -> list[sqlite3.Row]:
         return self.repository.list_exercise_items(lesson_id)
@@ -244,18 +257,18 @@ class LessonService:
     def delete_exercise_item(self, lesson_id: int, item_id: int) -> bool:
         return self.repository.delete_exercise_item(lesson_id, item_id)
 
-    def submit_exercise_answer(self, lesson_id: int, exercise_id: int, user_id: int, answer: str) -> tuple[bool, sqlite3.Row]:
+    def submit_exercise_answer(
+        self, lesson_id: int, exercise_id: int, assignment_id: int, user_id: int, selected_option_index: int
+    ) -> tuple[bool, sqlite3.Row]:
         item = self.repository.get_exercise_item(lesson_id, exercise_id)
         if item is None:
             raise ValueError("exercise item not found")
-        answer = answer.strip()
-        if not answer:
-            raise ExerciseItemError("Ответ не может быть пустым.")
-        if len(answer) > MAX_EXERCISE_ANSWER_LENGTH:
-            raise ExerciseItemError(f"Слишком длинный ответ: максимум {MAX_EXERCISE_ANSWER_LENGTH} символов.")
-        is_correct = _normalize_exercise_answer(answer) == _normalize_exercise_answer(str(item["expected_answer"]))
-        row = self.repository.submit_exercise_answer(exercise_id, user_id, answer, is_correct)
-        return is_correct, row
+        options = json.loads(item["options_json"])
+        if not (0 <= selected_option_index < len(options)):
+            raise ExerciseItemError("Некорректный вариант ответа.")
+        is_correct = selected_option_index == int(item["correct_option_index"])
+        row = self.repository.submit_exercise_answer(assignment_id, exercise_id, user_id, selected_option_index, is_correct)
+        return bool(row["is_correct"]), row
 
-    def list_latest_exercise_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
-        return self.repository.list_latest_exercise_answers(lesson_id, user_id)
+    def list_exercise_answers(self, assignment_id: int) -> dict[int, sqlite3.Row]:
+        return self.repository.list_exercise_answers(assignment_id)

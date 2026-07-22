@@ -8,8 +8,10 @@ from unittest.mock import patch
 
 from app.database import Database
 from app.handlers.student_lessons import (
-    STUDENT_LESSON_EXERCISE_TASK_PREFIX,
+    STUDENT_LESSON_EXERCISE_ANSWER_PREFIX,
+    STUDENT_LESSON_EXERCISE_NEXT_PREFIX,
     STUDENT_LESSON_EXERCISES_PREFIX,
+    STUDENT_LESSON_GRAMMAR_COMPLETE_PREFIX,
     STUDENT_LESSON_GRAMMAR_PREFIX,
     STUDENT_LESSON_HOMEWORK_PREFIX,
     STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX,
@@ -467,6 +469,34 @@ class LessonRuntimeProgressionTests(unittest.IsolatedAsyncioTestCase):
         await handle_student_lesson_callback(update, self.context)
         return update.callback_query.edits[-1]
 
+    async def _open_grammar(self, lesson_id):
+        update = self._callback_update(f"{STUDENT_LESSON_GRAMMAR_PREFIX}{lesson_id}")
+        await handle_student_lesson_callback(update, self.context)
+        return update.callback_query.edits[-1]
+
+    async def _complete_grammar(self, lesson_id, item_id):
+        update = self._callback_update(f"{STUDENT_LESSON_GRAMMAR_COMPLETE_PREFIX}{lesson_id}:{item_id}")
+        await handle_student_lesson_callback(update, self.context)
+        return update.callback_query.edits[-1]
+
+    async def _open_exercises(self, lesson_id):
+        update = self._callback_update(f"{STUDENT_LESSON_EXERCISES_PREFIX}{lesson_id}")
+        await handle_student_lesson_callback(update, self.context)
+        return update.callback_query.edits[-1]
+
+    async def _answer_exercise(self, lesson_id, item_id, option_index):
+        update = self._callback_update(f"{STUDENT_LESSON_EXERCISE_ANSWER_PREFIX}{lesson_id}:{item_id}:{option_index}")
+        await handle_student_lesson_callback(update, self.context)
+        return update.callback_query.edits[-1]
+
+    async def _exercise_next(self, lesson_id):
+        update = self._callback_update(f"{STUDENT_LESSON_EXERCISE_NEXT_PREFIX}{lesson_id}")
+        await handle_student_lesson_callback(update, self.context)
+        return update.callback_query.edits[-1]
+
+    def _assignment_id(self, lesson_id):
+        return int(self.db.get_active_lesson_assignment(lesson_id)["id"])
+
     async def test_words_only_lesson_advances_straight_to_finished(self):
         lesson = self._lesson("Lesson 1 — Food")
         self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
@@ -498,95 +528,227 @@ class LessonRuntimeProgressionTests(unittest.IsolatedAsyncioTestCase):
         self.db.add_lesson_words(lesson["id"], ["apple"], self.teacher["id"])
         repo = LessonRepository(self.db)
         service = LessonService(repo)
-        service.add_grammar_item(lesson["id"], "Present Simple", "Use base verb form.", "I work every day.")
-        service.add_exercise_item(lesson["id"], "I ___ (work) every day.", "work", "base form")
+        g1 = service.add_grammar_item(lesson["id"], "Present Simple", "Use base verb form.", "I work every day.")
+        g2 = service.add_grammar_item(lesson["id"], "Third person -s", "Add -s for he/she/it.")
+        exercise = service.add_exercise_item(lesson["id"], "I ___ every day.", ["work", "works", "working"], 0, "Base form with I.")
         service.add_translation_task(lesson["id"], "receipt", "чек")
 
         words_to_grammar_text, _kb = await self._next_stage(lesson["id"])
         self.assertIn("📝 Грамматика", words_to_grammar_text)
 
-        grammar_update = self._callback_update(f"{STUDENT_LESSON_GRAMMAR_PREFIX}{lesson['id']}")
-        await handle_student_lesson_callback(grammar_update, self.context)
-        grammar_text = grammar_update.callback_query.edits[-1][0]
-        self.assertIn("Present Simple", grammar_text)
-        self.assertIn("Use base verb form.", grammar_text)
-        self.assertIn("Example: I work every day.", grammar_text)
+        card1_text, card1_kb = await self._open_grammar(lesson["id"])
+        self.assertIn("📘 Грамматика 1 из 2", card1_text)
+        self.assertIn("Present Simple", card1_text)
+        self.assertIn("Use base verb form.", card1_text)
+        self.assertIn("Example: I work every day.", card1_text)
+        self.assertEqual([b.text for row in card1_kb.inline_keyboard for b in row], ["▶ Далее", "⬅️ Урок"])
 
-        grammar_to_exercises_text, _kb = await self._next_stage(lesson["id"])
+        # Cannot skip GRAMMAR while items remain - the generic advance stays put.
+        blocked_text, _kb = await self._next_stage(lesson["id"])
+        self.assertIn("📝 Грамматика", blocked_text)
+        self.assertEqual(self.db.get_active_lesson_assignment(lesson["id"])["completed_at"], None)
+
+        card2_text, _kb = await self._complete_grammar(lesson["id"], g1["id"])
+        self.assertIn("📘 Грамматика 2 из 2", card2_text)
+        self.assertIn("Third person -s", card2_text)
+
+        # Completing the last item auto-advances straight to the next stage screen.
+        grammar_to_exercises_text, _kb = await self._complete_grammar(lesson["id"], g2["id"])
         self.assertIn("✏️ Упражнения", grammar_to_exercises_text)
 
-        exercises_update = self._callback_update(f"{STUDENT_LESSON_EXERCISES_PREFIX}{lesson['id']}")
-        await handle_student_lesson_callback(exercises_update, self.context)
-        exercises_text = exercises_update.callback_query.edits[-1][0]
-        self.assertIn("I ___ (work) every day.", exercises_text)
-        self.assertIn("⚪", exercises_text)
+        question_text, question_kb = await self._open_exercises(lesson["id"])
+        self.assertIn("✏️ Упражнение 1 из 1", question_text)
+        self.assertIn("I ___ every day.", question_text)
+        self.assertEqual([b.text for row in question_kb.inline_keyboard for b in row], ["work", "works", "working", "⬅️ Урок"])
 
-        item = service.list_exercise_items(lesson["id"])[0]
-        open_task = self._callback_update(f"{STUDENT_LESSON_EXERCISE_TASK_PREFIX}{lesson['id']}:{item['id']}")
-        await handle_student_lesson_callback(open_task, self.context)
-        self.assertIn("I ___ (work) every day.", open_task.callback_query.edits[-1][0])
-        self.assertEqual(self.context.user_data.get("pending_exercise_answer"), {"lesson_id": lesson["id"], "exercise_id": item["id"]})
+        result_text, result_kb = await self._answer_exercise(lesson["id"], exercise["id"], 0)
+        self.assertIn("✅ Верно!", result_text)
+        self.assertIn("Base form with I.", result_text)
+        self.assertEqual([b.text for row in result_kb.inline_keyboard for b in row], ["▶ Далее"])
 
-        answer_update = self._message_update(text="Work")
-        self.assertTrue(await handle_student_lesson_message(answer_update, self.context))
-        self.assertIn("✅ Верно!", answer_update.effective_message.replies[-1][0])
-        self.assertIsNone(self.context.user_data.get("pending_exercise_answer"))
-
-        exercises_to_homework_text, _kb = await self._next_stage(lesson["id"])
+        exercises_to_homework_text, _kb = await self._exercise_next(lesson["id"])
         self.assertIn("🏠 Домашнее задание", exercises_to_homework_text)
 
         finish_text, finish_kb = await self._next_stage(lesson["id"])
         self.assertIn("🎉 Урок завершён", finish_text)
         self.assertEqual([b.text for row in finish_kb.inline_keyboard for b in row], ["⬅️ Мои уроки"])
+        self.assertIsNotNone(self.db.get_active_lesson_assignment(lesson["id"])["completed_at"])
 
-    async def test_exercise_wrong_answer_shows_expected_and_hint(self):
+    async def test_exercise_incorrect_option_shows_correct_and_explanation(self):
         lesson = self._lesson("Lesson 4 — Food")
         self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
         repo = LessonRepository(self.db)
         service = LessonService(repo)
-        item = service.add_exercise_item(lesson["id"], "I ___ (work) every day.", "work", "base form, no -s")
+        item = service.add_exercise_item(lesson["id"], "I ___ every day.", ["work", "works"], 0, "Base form, no -s.")
 
-        open_task = self._callback_update(f"{STUDENT_LESSON_EXERCISE_TASK_PREFIX}{lesson['id']}:{item['id']}")
-        await handle_student_lesson_callback(open_task, self.context)
+        reply, _kb = await self._answer_exercise(lesson["id"], item["id"], 1)
 
-        answer_update = self._message_update(text="works")
-        await handle_student_lesson_message(answer_update, self.context)
-        reply = answer_update.effective_message.replies[-1][0]
         self.assertIn("❌ Неверно.", reply)
-        self.assertIn("Правильный ответ: work", reply)
-        self.assertIn("Подсказка: base form, no -s", reply)
+        self.assertIn("Правильный вариант: work", reply)
+        self.assertIn("Base form, no -s.", reply)
+
+    async def test_exercise_first_attempt_is_immutable(self):
+        lesson = self._lesson("Lesson 4b — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        item = service.add_exercise_item(lesson["id"], "I ___ every day.", ["work", "works"], 0)
+
+        first_reply, _kb = await self._answer_exercise(lesson["id"], item["id"], 1)
+        self.assertIn("❌ Неверно.", first_reply)
+
+        second_reply, _kb = await self._answer_exercise(lesson["id"], item["id"], 0)
+        self.assertIn("❌ Неверно.", second_reply)
+
+        assignment_id = self._assignment_id(lesson["id"])
+        answers = self.db.list_exercise_answers(assignment_id)
+        self.assertEqual(answers[item["id"]]["selected_option_index"], 1)
+
+    async def test_exercise_invalid_option_index_is_rejected(self):
+        lesson = self._lesson("Lesson 4c — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        item = service.add_exercise_item(lesson["id"], "I ___ every day.", ["work", "works"], 0)
+
+        update = self._callback_update(f"{STUDENT_LESSON_EXERCISE_ANSWER_PREFIX}{lesson['id']}:{item['id']}:9")
+        await handle_student_lesson_callback(update, self.context)
+
+        self.assertEqual(update.callback_query.edits, [])
+        assignment_id = self._assignment_id(lesson["id"])
+        self.assertEqual(self.db.list_exercise_answers(assignment_id), {})
+
+    async def test_cannot_advance_past_exercises_before_answering_all_items(self):
+        lesson = self._lesson("Lesson 4d — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        service.add_exercise_item(lesson["id"], "First", ["a", "b"], 0)
+        service.add_exercise_item(lesson["id"], "Second", ["a", "b"], 0)
+        self.db.set_student_lesson_section(lesson["id"], "student", "EXERCISES")
+
+        blocked_text, _kb = await self._next_stage(lesson["id"])
+        self.assertIn("✏️ Упражнения", blocked_text)
+        self.assertEqual(LessonRuntimeService(repo).get_next_section(lesson["id"], "student"), LessonSection.EXERCISES)
 
     async def test_grammar_empty_state_message(self):
         lesson = self._lesson("Lesson 5 — Food")
         self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
 
-        update = self._callback_update(f"{STUDENT_LESSON_GRAMMAR_PREFIX}{lesson['id']}")
-        await handle_student_lesson_callback(update, self.context)
+        text, _kb = await self._open_grammar(lesson["id"])
 
-        self.assertIn("В этом уроке пока нет грамматики.", update.callback_query.edits[-1][0])
+        self.assertIn("В этом уроке пока нет грамматики.", text)
 
-    async def test_resume_after_exit_shows_persisted_current_section(self):
+    async def test_grammar_resume_returns_to_first_uncompleted_item(self):
         lesson = self._lesson("Lesson 6 — Food")
         self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
         repo = LessonRepository(self.db)
         service = LessonService(repo)
-        service.add_grammar_item(lesson["id"], "Topic", "Explanation")
+        g1 = service.add_grammar_item(lesson["id"], "First", "Explanation 1")
+        g2 = service.add_grammar_item(lesson["id"], "Second", "Explanation 2")
+        service.add_grammar_item(lesson["id"], "Third", "Explanation 3")
 
-        await self._next_stage(lesson["id"])  # advance WORDS -> GRAMMAR, persisted
+        await self._open_grammar(lesson["id"])
+        await self._complete_grammar(lesson["id"], g1["id"])
+        # student "exits" here without completing item 2 - reopening should resume at item 2, not restart at item 1.
+        resume_text, _kb = await self._open_grammar(lesson["id"])
+        self.assertIn("📘 Грамматика 2 из 3", resume_text)
+        self.assertIn("Second", resume_text)
+        self.assertNotIn("First", resume_text)
 
-        start_update = self._callback_update(f"{STUDENT_LESSON_START_PREFIX}{lesson['id']}")
-        await handle_student_lesson_callback(start_update, self.context)
-        start_text = start_update.callback_query.edits[-1][0]
-        self.assertIn("📝 Грамматика", start_text)
+        # completing g2 out of a stale reference is still just "the current uncompleted item" - fine.
+        await self._complete_grammar(lesson["id"], g2["id"])
+        third_text, _kb = await self._open_grammar(lesson["id"])
+        self.assertIn("📘 Грамматика 3 из 3", third_text)
+        self.assertIn("Third", third_text)
 
-    async def test_overview_icons_reflect_current_section(self):
+    async def test_grammar_complete_callback_is_idempotent(self):
+        lesson = self._lesson("Lesson 6b — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        g1 = service.add_grammar_item(lesson["id"], "First", "Explanation 1")
+        service.add_grammar_item(lesson["id"], "Second", "Explanation 2")
+        await self._next_stage(lesson["id"])  # WORDS -> GRAMMAR (ungated)
+
+        await self._complete_grammar(lesson["id"], g1["id"])
+        await self._complete_grammar(lesson["id"], g1["id"])  # repeated/stale callback for the same item
+
+        assignment_id = self._assignment_id(lesson["id"])
+        progress = self.db.list_grammar_progress(assignment_id)
+        self.assertEqual(set(progress.keys()), {g1["id"]})
+        rows = self.db.fetchall(
+            "SELECT * FROM student_grammar_progress WHERE assignment_id = ? AND grammar_item_id = ?",
+            (assignment_id, g1["id"]),
+        )
+        self.assertEqual(len(rows), 1)
+        # still on GRAMMAR - the second item hasn't been completed.
+        self.assertEqual(LessonRuntimeService(repo).get_next_section(lesson["id"], "student"), LessonSection.GRAMMAR)
+
+    async def test_grammar_complete_rejects_item_from_another_lesson(self):
+        lesson = self._lesson("Lesson 6c — Food")
+        other_lesson = self._lesson("Lesson 6d — Travel")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        other_item = service.add_grammar_item(other_lesson["id"], "Other", "Explanation")
+
+        text, _kb = await self._complete_grammar(lesson["id"], other_item["id"])
+
+        self.assertIn("Тема не найдена.", text)
+        assignment_id = self._assignment_id(lesson["id"])
+        self.assertEqual(self.db.list_grammar_progress(assignment_id), {})
+
+    async def test_reassigning_same_lesson_starts_with_clean_progress(self):
         lesson = self._lesson("Lesson 7 — Food")
         self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
         repo = LessonRepository(self.db)
         service = LessonService(repo)
-        service.add_grammar_item(lesson["id"], "Topic", "Explanation")
+        grammar_item = service.add_grammar_item(lesson["id"], "Topic", "Explanation")
+        exercise_item = service.add_exercise_item(lesson["id"], "Prompt", ["a", "b"], 0)
 
-        await self._next_stage(lesson["id"])  # WORDS -> GRAMMAR
+        await self._next_stage(lesson["id"])  # WORDS -> GRAMMAR (ungated)
+        await self._complete_grammar(lesson["id"], grammar_item["id"])  # GRAMMAR complete -> auto-advances to EXERCISES
+        await self._answer_exercise(lesson["id"], exercise_item["id"], 0)
+        await self._exercise_next(lesson["id"])  # EXERCISES complete -> no homework tasks -> auto-advances to FINISHED
+        first_assignment_id = self._assignment_id(lesson["id"])
+        self.assertEqual(LessonRuntimeService(repo).get_next_section(lesson["id"], "student"), LessonSection.FINISHED)
+
+        self.db.unassign_lesson(lesson["id"])
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        second_assignment_id = self._assignment_id(lesson["id"])
+
+        self.assertNotEqual(first_assignment_id, second_assignment_id)
+        self.assertEqual(LessonRuntimeService(repo).get_next_section(lesson["id"], "student"), LessonSection.WORDS)
+        self.assertEqual(self.db.list_grammar_progress(second_assignment_id), {})
+        self.assertEqual(self.db.list_exercise_answers(second_assignment_id), {})
+        # old assignment's progress is untouched, just no longer active.
+        self.assertEqual(set(self.db.list_grammar_progress(first_assignment_id).keys()), {grammar_item["id"]})
+
+    async def test_resume_after_exit_shows_persisted_current_section(self):
+        lesson = self._lesson("Lesson 8 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        item = service.add_grammar_item(lesson["id"], "Topic", "Explanation")
+
+        await self._next_stage(lesson["id"])  # WORDS -> GRAMMAR (ungated)
+        await self._complete_grammar(lesson["id"], item["id"])  # only item done -> GRAMMAR complete -> auto-advances
+
+        start_update = self._callback_update(f"{STUDENT_LESSON_START_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(start_update, self.context)
+        start_text = start_update.callback_query.edits[-1][0]
+        self.assertIn("🎉 Урок завершён", start_text)
+
+    async def test_overview_icons_reflect_current_section(self):
+        lesson = self._lesson("Lesson 9 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        service.add_grammar_item(lesson["id"], "First", "Explanation")
+        service.add_grammar_item(lesson["id"], "Second", "Explanation")
+
+        await self._next_stage(lesson["id"])  # WORDS -> GRAMMAR (ungated)
 
         overview_update = self._callback_update(f"{STUDENT_LESSON_OPEN_PREFIX}{lesson['id']}")
         await handle_student_lesson_callback(overview_update, self.context)
@@ -595,6 +757,22 @@ class LessonRuntimeProgressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("✅ Слова", overview_text)
         self.assertIn("🟢 Грамматика", overview_text)
         self.assertIn("⚪ Упражнения", overview_text)
+
+    async def test_completed_at_not_set_prematurely(self):
+        lesson = self._lesson("Lesson 10 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        item = service.add_grammar_item(lesson["id"], "Topic", "Explanation")
+
+        # Repeated "Далее" taps while GRAMMAR is incomplete must never stamp completed_at.
+        await self._next_stage(lesson["id"])
+        for _ in range(3):
+            await self._next_stage(lesson["id"])
+            self.assertIsNone(self.db.get_active_lesson_assignment(lesson["id"])["completed_at"])
+
+        await self._complete_grammar(lesson["id"], item["id"])
+        self.assertIsNotNone(self.db.get_active_lesson_assignment(lesson["id"])["completed_at"])
 
 
 if __name__ == "__main__":
