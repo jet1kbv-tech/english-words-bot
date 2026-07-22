@@ -14,7 +14,7 @@ from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON,
 from app.lesson_metadata import lesson_display_name
 from app.notifications.notification_service import NotificationService
 from app.lesson_repository import LessonRepository
-from app.lesson_service import HomeworkTaskError, LessonService, LessonWordImportError, normalize_lesson_words_import
+from app.lesson_service import ExerciseItemError, GrammarItemError, HomeworkTaskError, LessonService, LessonWordImportError, normalize_lesson_words_import
 from app.student_access_service import StudentAccessService
 
 _SELECT_PROGRESS = "teacher_select_progress"
@@ -37,6 +37,10 @@ _CREATE_HOMEWORK_TASK = "teacher_create_homework_task"
 _PENDING_HOMEWORK_TASK = "pending_homework_task"
 _REVIEW_HOMEWORK_ANSWER = "teacher_review_homework_answer"
 _PENDING_HOMEWORK_REVIEW = "pending_homework_review"
+_CREATE_GRAMMAR_ITEM = "teacher_create_grammar_item"
+_PENDING_GRAMMAR_ITEM = "pending_grammar_item"
+_CREATE_EXERCISE_ITEM = "teacher_create_exercise_item"
+_PENDING_EXERCISE_ITEM = "pending_exercise_item"
 NOT_STARTED_TEXT = "Ученик ещё не запускал бота. Попросите его открыть бота и нажать /start."
 
 HOMEWORK_TASK_TYPE_LABELS = {
@@ -80,6 +84,16 @@ TEACHER_LESSON_HOMEWORK_DELETE_PREFIX = "teacher:lesson:homework:delete:"
 TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX = "teacher:lesson:homework:delete_confirm:"
 TEACHER_LESSON_HOMEWORK_REVIEW_CORRECT_PREFIX = "teacher:lesson:homework:review_correct:"
 TEACHER_LESSON_HOMEWORK_REVIEW_INCORRECT_PREFIX = "teacher:lesson:homework:review_incorrect:"
+TEACHER_LESSON_GRAMMAR_ADD_PREFIX = "teacher:lesson:grammar:add:"
+TEACHER_LESSON_GRAMMAR_CANCEL_PREFIX = "teacher:lesson:grammar:cancel:"
+TEACHER_LESSON_GRAMMAR_OPEN_PREFIX = "teacher:lesson:grammar:open:"
+TEACHER_LESSON_GRAMMAR_DELETE_PREFIX = "teacher:lesson:grammar:delete:"
+TEACHER_LESSON_GRAMMAR_DELETE_CONFIRM_PREFIX = "teacher:lesson:grammar:delete_confirm:"
+TEACHER_LESSON_EXERCISES_ADD_PREFIX = "teacher:lesson:exercises:add:"
+TEACHER_LESSON_EXERCISES_CANCEL_PREFIX = "teacher:lesson:exercises:cancel:"
+TEACHER_LESSON_EXERCISES_OPEN_PREFIX = "teacher:lesson:exercises:open:"
+TEACHER_LESSON_EXERCISES_DELETE_PREFIX = "teacher:lesson:exercises:delete:"
+TEACHER_LESSON_EXERCISES_DELETE_CONFIRM_PREFIX = "teacher:lesson:exercises:delete_confirm:"
 TEACHER_LESSONS_LIST_CALLBACK = "teacher:lessons:list"
 TEACHER_LESSON_CALLBACK_PREFIXES = (
     TEACHER_LESSON_WORDS_PREFIX,
@@ -428,8 +442,6 @@ async def _show_lesson_words_selection(update: Update, context: ContextTypes.DEF
 def _format_lesson_section(summary, section: str) -> str:
     descriptions = {
         "words": ("📖 Слова", "Этот раздел скоро позволит добавлять и редактировать слова урока."),
-        "grammar": ("📝 Грамматика", "Этот раздел скоро позволит добавлять грамматическую тему и объяснения."),
-        "exercises": ("✏️ Упражнения", "Этот раздел скоро позволит добавлять упражнения урока."),
         "ai": ("🤖 AI-помощник", "Скоро здесь можно будет сгенерировать слова, упражнения, домашку и подсказки с помощью AI."),
     }
     title, description = descriptions[section]
@@ -559,6 +571,144 @@ def _homework_delete_confirm_keyboard(lesson_id: int, task_id: int) -> InlineKey
         [InlineKeyboardButton("✅ Да, удалить", callback_data=f"{TEACHER_LESSON_HOMEWORK_DELETE_CONFIRM_PREFIX}{lesson_id}:{task_id}")],
         [InlineKeyboardButton("↩️ Отмена", callback_data=f"{TEACHER_LESSON_HOMEWORK_OPEN_PREFIX}{lesson_id}:{task_id}")],
     ])
+
+
+def _format_lesson_grammar(summary, items: list) -> str:
+    header = ["📝 Грамматика", "", f"Урок: {lesson_display_name(summary)}"]
+    if not items:
+        return "\n".join(header + ["", "Пока нет тем."])
+    lines = [f"{index}. {item['title']}" for index, item in enumerate(items, start=1)]
+    return "\n".join(header + [""] + lines)
+
+
+def _lesson_grammar_keyboard(lesson_id: int, items: list) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(str(item["title"]), callback_data=f"{TEACHER_LESSON_GRAMMAR_OPEN_PREFIX}{lesson_id}:{item['id']}")]
+        for item in items
+    ]
+    rows.append([InlineKeyboardButton("➕ Добавить тему", callback_data=f"{TEACHER_LESSON_GRAMMAR_ADD_PREFIX}{lesson_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Урок", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _format_grammar_item_detail(summary, item) -> str:
+    if summary is None or item is None:
+        return "Тема не найдена."
+    lines = [
+        "📝 Тема",
+        "",
+        f"Урок: {lesson_display_name(summary)}",
+        f"Заголовок: {item['title']}",
+        "",
+        str(item["explanation"]),
+    ]
+    if item["example"]:
+        lines.append("")
+        lines.append(f"Example: {item['example']}")
+    return "\n".join(lines)
+
+
+def _grammar_item_detail_keyboard(lesson_id: int, item_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Удалить", callback_data=f"{TEACHER_LESSON_GRAMMAR_DELETE_PREFIX}{lesson_id}:{item_id}")],
+        [InlineKeyboardButton("⬅️ Грамматика", callback_data=f"{TEACHER_LESSON_GRAMMAR_PREFIX}{lesson_id}")],
+    ])
+
+
+def _format_grammar_delete_confirm(item) -> str:
+    return "\n".join(["Удалить тему?", "", str(item["title"])])
+
+
+def _grammar_delete_confirm_keyboard(lesson_id: int, item_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"{TEACHER_LESSON_GRAMMAR_DELETE_CONFIRM_PREFIX}{lesson_id}:{item_id}")],
+        [InlineKeyboardButton("↩️ Отмена", callback_data=f"{TEACHER_LESSON_GRAMMAR_OPEN_PREFIX}{lesson_id}:{item_id}")],
+    ])
+
+
+async def _show_lesson_grammar(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int, *, edit: bool = False) -> None:
+    db: Database = context.application.bot_data["db"]
+    service = _lesson_service(db)
+    summary = service.get_lesson_summary(lesson_id)
+    if summary is None:
+        return
+    items = service.list_grammar_items(lesson_id)
+    text = _format_lesson_grammar(summary, items)
+    markup = _lesson_grammar_keyboard(lesson_id, items)
+    if edit and update.callback_query is not None:
+        await update.callback_query.edit_message_text(text, reply_markup=markup)
+    elif update.effective_message is not None:
+        await update.effective_message.reply_text(text, reply_markup=markup)
+
+
+def _format_lesson_exercises(summary, items: list) -> str:
+    header = ["✏️ Упражнения", "", f"Урок: {lesson_display_name(summary)}"]
+    if not items:
+        return "\n".join(header + ["", "Пока нет упражнений."])
+    lines = []
+    for index, item in enumerate(items, start=1):
+        prompt = str(item["prompt"])
+        short_prompt = prompt if len(prompt) <= 60 else prompt[:57] + "…"
+        lines.append(f"{index}. {short_prompt}")
+    return "\n".join(header + [""] + lines)
+
+
+def _lesson_exercises_keyboard(lesson_id: int, items: list) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(str(item["prompt"])[:40], callback_data=f"{TEACHER_LESSON_EXERCISES_OPEN_PREFIX}{lesson_id}:{item['id']}")]
+        for item in items
+    ]
+    rows.append([InlineKeyboardButton("➕ Добавить упражнение", callback_data=f"{TEACHER_LESSON_EXERCISES_ADD_PREFIX}{lesson_id}")])
+    rows.append([InlineKeyboardButton("⬅️ Урок", callback_data=f"{TEACHER_LESSON_BACK_PREFIX}{lesson_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _format_exercise_item_detail(summary, item) -> str:
+    if summary is None or item is None:
+        return "Упражнение не найдено."
+    lines = [
+        "✏️ Упражнение",
+        "",
+        f"Урок: {lesson_display_name(summary)}",
+        f"Задание: {item['prompt']}",
+        f"Правильный ответ: {item['expected_answer']}",
+    ]
+    if item["hint"]:
+        lines.append(f"Подсказка: {item['hint']}")
+    return "\n".join(lines)
+
+
+def _exercise_item_detail_keyboard(lesson_id: int, item_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑 Удалить", callback_data=f"{TEACHER_LESSON_EXERCISES_DELETE_PREFIX}{lesson_id}:{item_id}")],
+        [InlineKeyboardButton("⬅️ Упражнения", callback_data=f"{TEACHER_LESSON_EXERCISES_PREFIX}{lesson_id}")],
+    ])
+
+
+def _format_exercise_delete_confirm(item) -> str:
+    return "\n".join(["Удалить упражнение?", "", str(item["prompt"])])
+
+
+def _exercise_delete_confirm_keyboard(lesson_id: int, item_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"{TEACHER_LESSON_EXERCISES_DELETE_CONFIRM_PREFIX}{lesson_id}:{item_id}")],
+        [InlineKeyboardButton("↩️ Отмена", callback_data=f"{TEACHER_LESSON_EXERCISES_OPEN_PREFIX}{lesson_id}:{item_id}")],
+    ])
+
+
+async def _show_lesson_exercises(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int, *, edit: bool = False) -> None:
+    db: Database = context.application.bot_data["db"]
+    service = _lesson_service(db)
+    summary = service.get_lesson_summary(lesson_id)
+    if summary is None:
+        return
+    items = service.list_exercise_items(lesson_id)
+    text = _format_lesson_exercises(summary, items)
+    markup = _lesson_exercises_keyboard(lesson_id, items)
+    if edit and update.callback_query is not None:
+        await update.callback_query.edit_message_text(text, reply_markup=markup)
+    elif update.effective_message is not None:
+        await update.effective_message.reply_text(text, reply_markup=markup)
 
 
 async def _show_lesson_homework(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int, *, edit: bool = False) -> None:
@@ -798,6 +948,122 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         await query.edit_message_text(_format_homework_task_detail(summary, task, answer), reply_markup=_homework_task_detail_keyboard(lesson_id, task_id, answer))
         return
 
+    if data.startswith(TEACHER_LESSON_GRAMMAR_ADD_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_GRAMMAR_ADD_PREFIX)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        context.user_data["teacher_action"] = _CREATE_GRAMMAR_ITEM
+        context.user_data[_PENDING_GRAMMAR_ITEM] = {"lesson_id": lesson_id, "step": "title"}
+        await query.edit_message_text("Введите заголовок темы:")
+        return
+
+    if data.startswith(TEACHER_LESSON_GRAMMAR_CANCEL_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_GRAMMAR_CANCEL_PREFIX)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_GRAMMAR_ITEM, None)
+        await _show_lesson_grammar(update, context, lesson_id, edit=True)
+        return
+
+    if data.startswith(TEACHER_LESSON_GRAMMAR_DELETE_CONFIRM_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_GRAMMAR_DELETE_CONFIRM_PREFIX)
+        if ids is None:
+            return
+        lesson_id, item_id = ids
+        if service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        service.delete_grammar_item(lesson_id, item_id)
+        await _show_lesson_grammar(update, context, lesson_id, edit=True)
+        return
+
+    if data.startswith(TEACHER_LESSON_GRAMMAR_DELETE_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_GRAMMAR_DELETE_PREFIX)
+        if ids is None:
+            return
+        lesson_id, item_id = ids
+        summary = service.get_lesson_summary(lesson_id)
+        item = service.get_grammar_item(lesson_id, item_id) if summary is not None else None
+        if summary is None or item is None:
+            await query.edit_message_text("Тема не найдена.")
+            return
+        await query.edit_message_text(_format_grammar_delete_confirm(item), reply_markup=_grammar_delete_confirm_keyboard(lesson_id, item_id))
+        return
+
+    if data.startswith(TEACHER_LESSON_GRAMMAR_OPEN_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_GRAMMAR_OPEN_PREFIX)
+        if ids is None:
+            return
+        lesson_id, item_id = ids
+        summary = service.get_lesson_summary(lesson_id)
+        item = service.get_grammar_item(lesson_id, item_id) if summary is not None else None
+        if summary is None or item is None:
+            await query.edit_message_text("Тема не найдена.")
+            return
+        await query.edit_message_text(_format_grammar_item_detail(summary, item), reply_markup=_grammar_item_detail_keyboard(lesson_id, item_id))
+        return
+
+    if data.startswith(TEACHER_LESSON_EXERCISES_ADD_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_EXERCISES_ADD_PREFIX)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        context.user_data["teacher_action"] = _CREATE_EXERCISE_ITEM
+        context.user_data[_PENDING_EXERCISE_ITEM] = {"lesson_id": lesson_id, "step": "prompt"}
+        await query.edit_message_text("Введите текст упражнения:")
+        return
+
+    if data.startswith(TEACHER_LESSON_EXERCISES_CANCEL_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_EXERCISES_CANCEL_PREFIX)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_EXERCISE_ITEM, None)
+        await _show_lesson_exercises(update, context, lesson_id, edit=True)
+        return
+
+    if data.startswith(TEACHER_LESSON_EXERCISES_DELETE_CONFIRM_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_EXERCISES_DELETE_CONFIRM_PREFIX)
+        if ids is None:
+            return
+        lesson_id, item_id = ids
+        if service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        service.delete_exercise_item(lesson_id, item_id)
+        await _show_lesson_exercises(update, context, lesson_id, edit=True)
+        return
+
+    if data.startswith(TEACHER_LESSON_EXERCISES_DELETE_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_EXERCISES_DELETE_PREFIX)
+        if ids is None:
+            return
+        lesson_id, item_id = ids
+        summary = service.get_lesson_summary(lesson_id)
+        item = service.get_exercise_item(lesson_id, item_id) if summary is not None else None
+        if summary is None or item is None:
+            await query.edit_message_text("Упражнение не найдено.")
+            return
+        await query.edit_message_text(_format_exercise_delete_confirm(item), reply_markup=_exercise_delete_confirm_keyboard(lesson_id, item_id))
+        return
+
+    if data.startswith(TEACHER_LESSON_EXERCISES_OPEN_PREFIX):
+        ids = _two_int_ids_from_callback(data, TEACHER_LESSON_EXERCISES_OPEN_PREFIX)
+        if ids is None:
+            return
+        lesson_id, item_id = ids
+        summary = service.get_lesson_summary(lesson_id)
+        item = service.get_exercise_item(lesson_id, item_id) if summary is not None else None
+        if summary is None or item is None:
+            await query.edit_message_text("Упражнение не найдено.")
+            return
+        await query.edit_message_text(_format_exercise_item_detail(summary, item), reply_markup=_exercise_item_detail_keyboard(lesson_id, item_id))
+        return
+
     if data.startswith(TEACHER_LESSON_WORDS_AI_EDIT_PREFIX):
         ids = _ai_translation_edit_ids_from_callback(data)
         if ids is None:
@@ -1011,13 +1277,16 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             return
         section_by_prefix = {
             TEACHER_LESSON_WORDS_PREFIX: "words",
-            TEACHER_LESSON_GRAMMAR_PREFIX: "grammar",
-            TEACHER_LESSON_EXERCISES_PREFIX: "exercises",
-            TEACHER_LESSON_HOMEWORK_PREFIX: "homework",
             TEACHER_LESSON_AI_PREFIX: "ai",
         }
         if prefix == TEACHER_LESSON_WORDS_PREFIX:
             await _show_lesson_words(update, context, lesson_id, edit=True)
+            return
+        if prefix == TEACHER_LESSON_GRAMMAR_PREFIX:
+            await _show_lesson_grammar(update, context, lesson_id, edit=True)
+            return
+        if prefix == TEACHER_LESSON_EXERCISES_PREFIX:
+            await _show_lesson_exercises(update, context, lesson_id, edit=True)
             return
         if prefix == TEACHER_LESSON_HOMEWORK_PREFIX:
             await _show_lesson_homework(update, context, lesson_id, edit=True)
@@ -1359,6 +1628,82 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
         await update.effective_message.reply_text(
             _format_homework_task_detail(summary, task, answer), reply_markup=_homework_task_detail_keyboard(lesson_id, task_id, answer)
         )
+        return True
+
+    if action == _CREATE_GRAMMAR_ITEM:
+        draft = context.user_data.get(_PENDING_GRAMMAR_ITEM) or {}
+        lesson_id = int(draft.get("lesson_id") or 0)
+        step = str(draft.get("step") or "")
+        service = _lesson_service(db)
+        if not lesson_id or service.get_lesson_summary(lesson_id) is None:
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_GRAMMAR_ITEM, None)
+            return False
+
+        if step == "title":
+            if not text.strip():
+                await update.effective_message.reply_text("Заголовок не может быть пустым. Введите заголовок темы:")
+                return True
+            draft["title"] = text.strip()
+            draft["step"] = "explanation"
+            await update.effective_message.reply_text("Введите объяснение темы:")
+            return True
+        if step == "explanation":
+            if not text.strip():
+                await update.effective_message.reply_text("Объяснение не может быть пустым. Введите объяснение темы:")
+                return True
+            draft["explanation"] = text.strip()
+            draft["step"] = "example"
+            await update.effective_message.reply_text("Введите пример, или '-' чтобы пропустить:")
+            return True
+        example = None if text.strip() in {"-", "—"} else text
+        try:
+            service.add_grammar_item(lesson_id, draft.get("title", ""), draft.get("explanation", ""), example)
+        except GrammarItemError as error:
+            await update.effective_message.reply_text(str(error))
+            return True
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_GRAMMAR_ITEM, None)
+        await update.effective_message.reply_text("Тема добавлена ✅")
+        await _show_lesson_grammar(update, context, lesson_id)
+        return True
+
+    if action == _CREATE_EXERCISE_ITEM:
+        draft = context.user_data.get(_PENDING_EXERCISE_ITEM) or {}
+        lesson_id = int(draft.get("lesson_id") or 0)
+        step = str(draft.get("step") or "")
+        service = _lesson_service(db)
+        if not lesson_id or service.get_lesson_summary(lesson_id) is None:
+            context.user_data.pop("teacher_action", None)
+            context.user_data.pop(_PENDING_EXERCISE_ITEM, None)
+            return False
+
+        if step == "prompt":
+            if not text.strip():
+                await update.effective_message.reply_text("Задание не может быть пустым. Введите текст упражнения:")
+                return True
+            draft["prompt"] = text.strip()
+            draft["step"] = "answer"
+            await update.effective_message.reply_text("Введите правильный ответ:")
+            return True
+        if step == "answer":
+            if not text.strip():
+                await update.effective_message.reply_text("Ответ не может быть пустым. Введите правильный ответ:")
+                return True
+            draft["answer"] = text.strip()
+            draft["step"] = "hint"
+            await update.effective_message.reply_text("Введите подсказку, или '-' чтобы пропустить:")
+            return True
+        hint = None if text.strip() in {"-", "—"} else text
+        try:
+            service.add_exercise_item(lesson_id, draft.get("prompt", ""), draft.get("answer", ""), hint)
+        except ExerciseItemError as error:
+            await update.effective_message.reply_text(str(error))
+            return True
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_EXERCISE_ITEM, None)
+        await update.effective_message.reply_text("Упражнение добавлено ✅")
+        await _show_lesson_exercises(update, context, lesson_id)
         return True
 
     if action == _IMPORT_LESSON_WORDS:

@@ -475,6 +475,120 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertNotIn(other_task["id"], answers)
 
 
+class LessonGrammarExercisesDatabaseTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.student = self.db.upsert_user(40, "student", "Student")
+        self.teacher = self.db.upsert_user(41, "teacher", "Teacher")
+        self.lesson = self.db.create_teacher_lesson("Lesson 40 — Food", self.teacher["id"])
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def test_add_and_list_grammar_items_orders_by_position(self) -> None:
+        self.db.add_grammar_item(self.lesson["id"], "Second", "Explanation 2", position=1)
+        self.db.add_grammar_item(self.lesson["id"], "First", "Explanation 1", position=0)
+
+        items = self.db.list_grammar_items(self.lesson["id"])
+
+        self.assertEqual([item["title"] for item in items], ["First", "Second"])
+        self.assertEqual(items[0]["explanation"], "Explanation 1")
+        self.assertIsNone(items[0]["example"])
+
+    def test_get_grammar_item_requires_matching_lesson(self) -> None:
+        other = self.db.create_teacher_lesson("Lesson 41 — Travel", self.teacher["id"])
+        item = self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
+
+        self.assertIsNotNone(self.db.get_grammar_item(self.lesson["id"], item["id"]))
+        self.assertIsNone(self.db.get_grammar_item(other["id"], item["id"]))
+
+    def test_delete_grammar_item(self) -> None:
+        item = self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
+
+        self.assertTrue(self.db.delete_grammar_item(self.lesson["id"], item["id"]))
+        self.assertIsNone(self.db.get_grammar_item(self.lesson["id"], item["id"]))
+        self.assertFalse(self.db.delete_grammar_item(self.lesson["id"], item["id"]))
+
+    def test_add_and_list_exercise_items_orders_by_position(self) -> None:
+        self.db.add_exercise_item(self.lesson["id"], "Second prompt", "answer2", position=1)
+        self.db.add_exercise_item(self.lesson["id"], "First prompt", "answer1", position=0)
+
+        items = self.db.list_exercise_items(self.lesson["id"])
+
+        self.assertEqual([item["prompt"] for item in items], ["First prompt", "Second prompt"])
+
+    def test_delete_exercise_item_removes_item_and_answers(self) -> None:
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
+        self.db.submit_exercise_answer(item["id"], self.student["id"], "answer", True)
+
+        deleted = self.db.delete_exercise_item(self.lesson["id"], item["id"])
+
+        self.assertTrue(deleted)
+        self.assertIsNone(self.db.get_exercise_item(self.lesson["id"], item["id"]))
+        self.assertEqual(self.db.fetchall("SELECT * FROM lesson_exercise_answers WHERE exercise_id = ?", (item["id"],)), [])
+
+    def test_submit_exercise_answer_records_row(self) -> None:
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
+
+        answer = self.db.submit_exercise_answer(item["id"], self.student["id"], "answer", True)
+
+        self.assertEqual(answer["exercise_id"], item["id"])
+        self.assertEqual(answer["user_id"], self.student["id"])
+        self.assertEqual(answer["is_correct"], 1)
+
+    def test_list_latest_exercise_answers_keeps_only_newest_per_item(self) -> None:
+        item = self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
+        other_item = self.db.add_exercise_item(self.lesson["id"], "Other prompt", "other")
+        other_lesson = self.db.create_teacher_lesson("Lesson 42 — Travel", self.teacher["id"])
+        other_lesson_item = self.db.add_exercise_item(other_lesson["id"], "Different lesson", "x")
+
+        self.db.submit_exercise_answer(item["id"], self.student["id"], "wrong", False)
+        self.db.submit_exercise_answer(item["id"], self.student["id"], "answer", True)
+        self.db.submit_exercise_answer(other_lesson_item["id"], self.student["id"], "irrelevant", True)
+
+        answers = self.db.list_latest_exercise_answers(self.lesson["id"], self.student["id"])
+
+        self.assertEqual(set(answers.keys()), {item["id"]})
+        self.assertEqual(answers[item["id"]]["answer"], "answer")
+        self.assertEqual(answers[item["id"]]["is_correct"], 1)
+        self.assertNotIn(other_item["id"], answers)
+
+    def test_get_lesson_summary_reflects_real_grammar_and_exercise_counts(self) -> None:
+        self.db.add_grammar_item(self.lesson["id"], "Title", "Explanation")
+        self.db.add_exercise_item(self.lesson["id"], "Prompt", "answer")
+
+        summary = self.db.get_lesson_summary(self.lesson["id"])
+
+        self.assertEqual(summary["grammar_count"], 1)
+        self.assertEqual(summary["exercises_count"], 1)
+
+    def test_set_student_lesson_section_persists_and_finishes(self) -> None:
+        self.db.assign_lesson_to_student(self.lesson["id"], "student", self.teacher["id"])
+
+        self.db.set_student_lesson_section(self.lesson["id"], "student", "GRAMMAR")
+        summary = self.db.get_student_lesson(self.lesson["id"], "student")
+        self.assertEqual(summary["current_section"], "GRAMMAR")
+
+        self.db.set_student_lesson_section(self.lesson["id"], "student", "FINISHED")
+        row = self.db.fetchone("SELECT * FROM lesson_students WHERE lesson_id = ? AND student_username = ?", (self.lesson["id"], "student"))
+        self.assertEqual(row["current_section"], "FINISHED")
+        self.assertIsNotNone(row["completed_at"])
+
+    def test_current_section_column_is_idempotently_added(self) -> None:
+        self.db.execute("ALTER TABLE lesson_students DROP COLUMN current_section")
+        columns_before = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lesson_students)")}
+        self.assertNotIn("current_section", columns_before)
+
+        self.db.init_schema()
+        self.db.init_schema()
+
+        columns_after = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lesson_students)")}
+        self.assertIn("current_section", columns_after)
+
+
 class TeacherLessonListTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = TemporaryDirectory()

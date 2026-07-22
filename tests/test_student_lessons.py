@@ -8,9 +8,13 @@ from unittest.mock import patch
 
 from app.database import Database
 from app.handlers.student_lessons import (
+    STUDENT_LESSON_EXERCISE_TASK_PREFIX,
+    STUDENT_LESSON_EXERCISES_PREFIX,
+    STUDENT_LESSON_GRAMMAR_PREFIX,
     STUDENT_LESSON_HOMEWORK_PREFIX,
     STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX,
     STUDENT_LESSON_HOMEWORK_TASK_PREFIX,
+    STUDENT_LESSON_NEXT_STAGE_PREFIX,
     STUDENT_LESSON_OPEN_PREFIX,
     STUDENT_LESSON_START_PREFIX,
     STUDENT_LESSON_WORDS_CARDS_PREFIX,
@@ -23,6 +27,7 @@ from app.handlers.teacher import _format_lessons_screen
 from app.keyboards import MY_LESSONS, TEACHER_LESSONS, main_menu_keyboard, teacher_menu_keyboard
 from app.lesson_repository import LessonRepository
 from app.lesson_runtime import LessonRuntimeService, LessonSection
+from app.lesson_service import LessonService
 
 
 @dataclass(frozen=True)
@@ -123,7 +128,7 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Следующий этап", start_text)
         self.assertIn("📖 Слова", start_text)
         self.assertIn("3 слова", start_text)
-        self.assertEqual([b.text for row in start_keyboard.inline_keyboard for b in row], ["▶ Открыть", "⬅️ Урок"])
+        self.assertEqual([b.text for row in start_keyboard.inline_keyboard for b in row], ["▶ Открыть", "▶ Далее", "⬅️ Урок"])
 
         words = self._callback_update(f"{STUDENT_LESSON_WORDS_PREFIX}{lesson['id']}")
         await handle_student_lesson_callback(words, self.context)
@@ -418,6 +423,178 @@ class StudentLessonsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🎮 Игра на 10 слов", buttons)
         self.assertIn("😵 Мои ошибки", buttons)
         self.assertIn("🔄 Обмен словами", buttons)
+
+
+class LessonRuntimeProgressionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
+        self.db.init_schema()
+        self.teacher = self.db.upsert_user(1, "teacher", "Teacher")
+        self.student = self.db.upsert_user(2, "student", "Student")
+        self.context = SimpleNamespace(application=SimpleNamespace(bot_data={"db": self.db, "settings": Settings(display_names={})}), user_data={})
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self.temp_dir.cleanup()
+
+    def _message_update(self, text=MY_LESSONS, username="student", user_id=2):
+        message = SimpleNamespace(text=text, replies=[])
+        async def reply_text(reply, reply_markup=None):
+            message.replies.append((reply, reply_markup))
+        message.reply_text = reply_text
+        return SimpleNamespace(effective_user=SimpleNamespace(id=user_id, username=username), effective_message=message, callback_query=None)
+
+    def _callback_update(self, data, username="student", user_id=2):
+        message = SimpleNamespace(replies=[])
+        async def reply_text(reply, reply_markup=None):
+            message.replies.append((reply, reply_markup))
+        message.reply_text = reply_text
+        query = SimpleNamespace(data=data, message=message, edits=[], answered=False)
+        async def answer():
+            query.answered = True
+        async def edit_message_text(text, reply_markup=None):
+            query.edits.append((text, reply_markup))
+        query.answer = answer
+        query.edit_message_text = edit_message_text
+        return SimpleNamespace(effective_user=SimpleNamespace(id=user_id, username=username), effective_message=message, callback_query=query)
+
+    def _lesson(self, title):
+        return self.db.create_teacher_lesson(title, self.teacher["id"])
+
+    async def _next_stage(self, lesson_id):
+        update = self._callback_update(f"{STUDENT_LESSON_NEXT_STAGE_PREFIX}{lesson_id}")
+        await handle_student_lesson_callback(update, self.context)
+        return update.callback_query.edits[-1]
+
+    async def test_words_only_lesson_advances_straight_to_finished(self):
+        lesson = self._lesson("Lesson 1 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["apple"], self.teacher["id"])
+
+        text, keyboard = await self._next_stage(lesson["id"])
+
+        self.assertIn("🎉 Урок завершён", text)
+        self.assertEqual([b.text for row in keyboard.inline_keyboard for b in row], ["⬅️ Мои уроки"])
+
+        repo = LessonRepository(self.db)
+        self.assertEqual(LessonRuntimeService(repo).get_next_section(lesson["id"], "student"), LessonSection.FINISHED)
+
+    async def test_empty_grammar_and_exercises_are_skipped(self):
+        lesson = self._lesson("Lesson 2 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["apple"], self.teacher["id"])
+        self.db.add_homework_task(lesson["id"], "free", "Write something")
+
+        text, _keyboard = await self._next_stage(lesson["id"])
+
+        self.assertIn("🏠 Домашнее задание", text)
+        repo = LessonRepository(self.db)
+        self.assertEqual(LessonRuntimeService(repo).get_next_section(lesson["id"], "student"), LessonSection.HOMEWORK)
+
+    async def test_full_progression_through_all_sections(self):
+        lesson = self._lesson("Lesson 3 — Present Simple")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        self.db.add_lesson_words(lesson["id"], ["apple"], self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        service.add_grammar_item(lesson["id"], "Present Simple", "Use base verb form.", "I work every day.")
+        service.add_exercise_item(lesson["id"], "I ___ (work) every day.", "work", "base form")
+        service.add_translation_task(lesson["id"], "receipt", "чек")
+
+        words_to_grammar_text, _kb = await self._next_stage(lesson["id"])
+        self.assertIn("📝 Грамматика", words_to_grammar_text)
+
+        grammar_update = self._callback_update(f"{STUDENT_LESSON_GRAMMAR_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(grammar_update, self.context)
+        grammar_text = grammar_update.callback_query.edits[-1][0]
+        self.assertIn("Present Simple", grammar_text)
+        self.assertIn("Use base verb form.", grammar_text)
+        self.assertIn("Example: I work every day.", grammar_text)
+
+        grammar_to_exercises_text, _kb = await self._next_stage(lesson["id"])
+        self.assertIn("✏️ Упражнения", grammar_to_exercises_text)
+
+        exercises_update = self._callback_update(f"{STUDENT_LESSON_EXERCISES_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(exercises_update, self.context)
+        exercises_text = exercises_update.callback_query.edits[-1][0]
+        self.assertIn("I ___ (work) every day.", exercises_text)
+        self.assertIn("⚪", exercises_text)
+
+        item = service.list_exercise_items(lesson["id"])[0]
+        open_task = self._callback_update(f"{STUDENT_LESSON_EXERCISE_TASK_PREFIX}{lesson['id']}:{item['id']}")
+        await handle_student_lesson_callback(open_task, self.context)
+        self.assertIn("I ___ (work) every day.", open_task.callback_query.edits[-1][0])
+        self.assertEqual(self.context.user_data.get("pending_exercise_answer"), {"lesson_id": lesson["id"], "exercise_id": item["id"]})
+
+        answer_update = self._message_update(text="Work")
+        self.assertTrue(await handle_student_lesson_message(answer_update, self.context))
+        self.assertIn("✅ Верно!", answer_update.effective_message.replies[-1][0])
+        self.assertIsNone(self.context.user_data.get("pending_exercise_answer"))
+
+        exercises_to_homework_text, _kb = await self._next_stage(lesson["id"])
+        self.assertIn("🏠 Домашнее задание", exercises_to_homework_text)
+
+        finish_text, finish_kb = await self._next_stage(lesson["id"])
+        self.assertIn("🎉 Урок завершён", finish_text)
+        self.assertEqual([b.text for row in finish_kb.inline_keyboard for b in row], ["⬅️ Мои уроки"])
+
+    async def test_exercise_wrong_answer_shows_expected_and_hint(self):
+        lesson = self._lesson("Lesson 4 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        item = service.add_exercise_item(lesson["id"], "I ___ (work) every day.", "work", "base form, no -s")
+
+        open_task = self._callback_update(f"{STUDENT_LESSON_EXERCISE_TASK_PREFIX}{lesson['id']}:{item['id']}")
+        await handle_student_lesson_callback(open_task, self.context)
+
+        answer_update = self._message_update(text="works")
+        await handle_student_lesson_message(answer_update, self.context)
+        reply = answer_update.effective_message.replies[-1][0]
+        self.assertIn("❌ Неверно.", reply)
+        self.assertIn("Правильный ответ: work", reply)
+        self.assertIn("Подсказка: base form, no -s", reply)
+
+    async def test_grammar_empty_state_message(self):
+        lesson = self._lesson("Lesson 5 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+
+        update = self._callback_update(f"{STUDENT_LESSON_GRAMMAR_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(update, self.context)
+
+        self.assertIn("В этом уроке пока нет грамматики.", update.callback_query.edits[-1][0])
+
+    async def test_resume_after_exit_shows_persisted_current_section(self):
+        lesson = self._lesson("Lesson 6 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        service.add_grammar_item(lesson["id"], "Topic", "Explanation")
+
+        await self._next_stage(lesson["id"])  # advance WORDS -> GRAMMAR, persisted
+
+        start_update = self._callback_update(f"{STUDENT_LESSON_START_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(start_update, self.context)
+        start_text = start_update.callback_query.edits[-1][0]
+        self.assertIn("📝 Грамматика", start_text)
+
+    async def test_overview_icons_reflect_current_section(self):
+        lesson = self._lesson("Lesson 7 — Food")
+        self.db.assign_lesson_to_student(lesson["id"], "student", self.teacher["id"])
+        repo = LessonRepository(self.db)
+        service = LessonService(repo)
+        service.add_grammar_item(lesson["id"], "Topic", "Explanation")
+
+        await self._next_stage(lesson["id"])  # WORDS -> GRAMMAR
+
+        overview_update = self._callback_update(f"{STUDENT_LESSON_OPEN_PREFIX}{lesson['id']}")
+        await handle_student_lesson_callback(overview_update, self.context)
+        overview_text = overview_update.callback_query.edits[-1][0]
+        self.assertIn("В процессе", overview_text)
+        self.assertIn("✅ Слова", overview_text)
+        self.assertIn("🟢 Грамматика", overview_text)
+        self.assertIn("⚪ Упражнения", overview_text)
 
 
 if __name__ == "__main__":

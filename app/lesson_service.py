@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 
 from app.lesson_repository import LessonRepository
@@ -13,6 +14,11 @@ MAX_HOMEWORK_ANSWER_LENGTH = 500
 MIN_QUIZ_OPTIONS = 2
 MAX_QUIZ_OPTIONS = 6
 MAX_QUIZ_OPTION_LENGTH = 200
+MAX_GRAMMAR_TITLE_LENGTH = 200
+MAX_GRAMMAR_TEXT_LENGTH = 1500
+MAX_EXERCISE_PROMPT_LENGTH = 500
+MAX_EXERCISE_ANSWER_LENGTH = 200
+MAX_EXERCISE_HINT_LENGTH = 500
 
 HOMEWORK_TASK_TYPE_TRANSLATION = "translation"
 HOMEWORK_TASK_TYPE_FREE = "free"
@@ -27,13 +33,25 @@ class HomeworkTaskError(ValueError):
     pass
 
 
-def _validated_prompt(prompt: str, *, empty_message: str) -> str:
+class GrammarItemError(ValueError):
+    pass
+
+
+class ExerciseItemError(ValueError):
+    pass
+
+
+def _validated_prompt(prompt: str, *, empty_message: str, max_length: int = MAX_HOMEWORK_PROMPT_LENGTH) -> str:
     prompt = prompt.strip()
     if not prompt:
         raise HomeworkTaskError(empty_message)
-    if len(prompt) > MAX_HOMEWORK_PROMPT_LENGTH:
-        raise HomeworkTaskError(f"Слишком длинный текст: максимум {MAX_HOMEWORK_PROMPT_LENGTH} символов.")
+    if len(prompt) > max_length:
+        raise HomeworkTaskError(f"Слишком длинный текст: максимум {max_length} символов.")
     return prompt
+
+
+def _normalize_exercise_answer(value: str) -> str:
+    return re.sub(r"\s+", " ", value.lower().replace("ё", "е")).strip()
 
 
 def normalize_lesson_words_import(text: str) -> list[str]:
@@ -171,3 +189,73 @@ class LessonService:
         if feedback and len(feedback) > MAX_HOMEWORK_ANSWER_LENGTH:
             raise HomeworkTaskError(f"Слишком длинный комментарий: максимум {MAX_HOMEWORK_ANSWER_LENGTH} символов.")
         return self.repository.review_homework_answer(answer_id, is_correct, feedback)
+
+    def _next_grammar_position(self, lesson_id: int) -> int:
+        return len(self.repository.list_grammar_items(lesson_id))
+
+    def add_grammar_item(self, lesson_id: int, title: str, explanation: str, example: str | None = None) -> sqlite3.Row:
+        title = title.strip()
+        if not title:
+            raise GrammarItemError("Заголовок не может быть пустым.")
+        if len(title) > MAX_GRAMMAR_TITLE_LENGTH:
+            raise GrammarItemError(f"Слишком длинный заголовок: максимум {MAX_GRAMMAR_TITLE_LENGTH} символов.")
+        explanation = explanation.strip()
+        if not explanation:
+            raise GrammarItemError("Объяснение не может быть пустым.")
+        if len(explanation) > MAX_GRAMMAR_TEXT_LENGTH:
+            raise GrammarItemError(f"Слишком длинное объяснение: максимум {MAX_GRAMMAR_TEXT_LENGTH} символов.")
+        example = example.strip() if example else None
+        if example and len(example) > MAX_GRAMMAR_TEXT_LENGTH:
+            raise GrammarItemError(f"Слишком длинный пример: максимум {MAX_GRAMMAR_TEXT_LENGTH} символов.")
+        position = self._next_grammar_position(lesson_id)
+        return self.repository.add_grammar_item(lesson_id, title, explanation, example or None, position)
+
+    def list_grammar_items(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.repository.list_grammar_items(lesson_id)
+
+    def get_grammar_item(self, lesson_id: int, item_id: int) -> sqlite3.Row | None:
+        return self.repository.get_grammar_item(lesson_id, item_id)
+
+    def delete_grammar_item(self, lesson_id: int, item_id: int) -> bool:
+        return self.repository.delete_grammar_item(lesson_id, item_id)
+
+    def _next_exercise_position(self, lesson_id: int) -> int:
+        return len(self.repository.list_exercise_items(lesson_id))
+
+    def add_exercise_item(self, lesson_id: int, prompt: str, expected_answer: str, hint: str | None = None) -> sqlite3.Row:
+        prompt = _validated_prompt(prompt, empty_message="Задание не может быть пустым.", max_length=MAX_EXERCISE_PROMPT_LENGTH)
+        expected_answer = expected_answer.strip()
+        if not expected_answer:
+            raise ExerciseItemError("Ответ не может быть пустым.")
+        if len(expected_answer) > MAX_EXERCISE_ANSWER_LENGTH:
+            raise ExerciseItemError(f"Слишком длинный ответ: максимум {MAX_EXERCISE_ANSWER_LENGTH} символов.")
+        hint = hint.strip() if hint else None
+        if hint and len(hint) > MAX_EXERCISE_HINT_LENGTH:
+            raise ExerciseItemError(f"Слишком длинная подсказка: максимум {MAX_EXERCISE_HINT_LENGTH} символов.")
+        position = self._next_exercise_position(lesson_id)
+        return self.repository.add_exercise_item(lesson_id, prompt, expected_answer, hint or None, position)
+
+    def list_exercise_items(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.repository.list_exercise_items(lesson_id)
+
+    def get_exercise_item(self, lesson_id: int, item_id: int) -> sqlite3.Row | None:
+        return self.repository.get_exercise_item(lesson_id, item_id)
+
+    def delete_exercise_item(self, lesson_id: int, item_id: int) -> bool:
+        return self.repository.delete_exercise_item(lesson_id, item_id)
+
+    def submit_exercise_answer(self, lesson_id: int, exercise_id: int, user_id: int, answer: str) -> tuple[bool, sqlite3.Row]:
+        item = self.repository.get_exercise_item(lesson_id, exercise_id)
+        if item is None:
+            raise ValueError("exercise item not found")
+        answer = answer.strip()
+        if not answer:
+            raise ExerciseItemError("Ответ не может быть пустым.")
+        if len(answer) > MAX_EXERCISE_ANSWER_LENGTH:
+            raise ExerciseItemError(f"Слишком длинный ответ: максимум {MAX_EXERCISE_ANSWER_LENGTH} символов.")
+        is_correct = _normalize_exercise_answer(answer) == _normalize_exercise_answer(str(item["expected_answer"]))
+        row = self.repository.submit_exercise_answer(exercise_id, user_id, answer, is_correct)
+        return is_correct, row
+
+    def list_latest_exercise_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
+        return self.repository.list_latest_exercise_answers(lesson_id, user_id)
