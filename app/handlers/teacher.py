@@ -90,6 +90,7 @@ TEACHER_LESSON_GRAMMAR_OPEN_PREFIX = "teacher:lesson:grammar:open:"
 TEACHER_LESSON_GRAMMAR_DELETE_PREFIX = "teacher:lesson:grammar:delete:"
 TEACHER_LESSON_GRAMMAR_DELETE_CONFIRM_PREFIX = "teacher:lesson:grammar:delete_confirm:"
 TEACHER_LESSON_EXERCISES_ADD_PREFIX = "teacher:lesson:exercises:add:"
+TEACHER_LESSON_EXERCISES_SAVE_PREFIX = "teacher:lesson:exercises:save:"
 TEACHER_LESSON_EXERCISES_CANCEL_PREFIX = "teacher:lesson:exercises:cancel:"
 TEACHER_LESSON_EXERCISES_OPEN_PREFIX = "teacher:lesson:exercises:open:"
 TEACHER_LESSON_EXERCISES_DELETE_PREFIX = "teacher:lesson:exercises:delete:"
@@ -666,15 +667,21 @@ def _lesson_exercises_keyboard(lesson_id: int, items: list) -> InlineKeyboardMar
 def _format_exercise_item_detail(summary, item) -> str:
     if summary is None or item is None:
         return "Упражнение не найдено."
+    options = json.loads(item["options_json"])
+    correct_index = int(item["correct_option_index"])
     lines = [
         "✏️ Упражнение",
         "",
         f"Урок: {lesson_display_name(summary)}",
         f"Задание: {item['prompt']}",
-        f"Правильный ответ: {item['expected_answer']}",
+        "Варианты:",
     ]
-    if item["hint"]:
-        lines.append(f"Подсказка: {item['hint']}")
+    for index, option in enumerate(options):
+        mark = "✅" if index == correct_index else "•"
+        lines.append(f"{mark} {option}")
+    if item["explanation"]:
+        lines.append("")
+        lines.append(f"Объяснение: {item['explanation']}")
     return "\n".join(lines)
 
 
@@ -693,6 +700,29 @@ def _exercise_delete_confirm_keyboard(lesson_id: int, item_id: int) -> InlineKey
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Да, удалить", callback_data=f"{TEACHER_LESSON_EXERCISES_DELETE_CONFIRM_PREFIX}{lesson_id}:{item_id}")],
         [InlineKeyboardButton("↩️ Отмена", callback_data=f"{TEACHER_LESSON_EXERCISES_OPEN_PREFIX}{lesson_id}:{item_id}")],
+    ])
+
+
+def _format_exercise_preview(draft: dict) -> str:
+    lines = ["✏️ Предпросмотр упражнения", "", str(draft.get("prompt", "")), "", "Варианты:"]
+    options = draft.get("options") or []
+    correct_index = draft.get("correct_index")
+    for index, option in enumerate(options):
+        mark = "✅" if index == correct_index else "•"
+        lines.append(f"{mark} {option}")
+    explanation = draft.get("explanation")
+    if explanation:
+        lines.append("")
+        lines.append(f"Объяснение: {explanation}")
+    return "\n".join(lines)
+
+
+def _exercise_preview_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    # Deliberately carries only lesson_id: options/correct_index/explanation stay in
+    # context.user_data and are never round-tripped through callback_data.
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Сохранить", callback_data=f"{TEACHER_LESSON_EXERCISES_SAVE_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"{TEACHER_LESSON_EXERCISES_CANCEL_PREFIX}{lesson_id}")],
     ])
 
 
@@ -1014,6 +1044,31 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
         context.user_data["teacher_action"] = _CREATE_EXERCISE_ITEM
         context.user_data[_PENDING_EXERCISE_ITEM] = {"lesson_id": lesson_id, "step": "prompt"}
         await query.edit_message_text("Введите текст упражнения:")
+        return
+
+    if data.startswith(TEACHER_LESSON_EXERCISES_SAVE_PREFIX):
+        lesson_id = _lesson_id_from_callback(data, TEACHER_LESSON_EXERCISES_SAVE_PREFIX)
+        if lesson_id is None or service.get_lesson_summary(lesson_id) is None:
+            await query.edit_message_text("Урок не найден.")
+            return
+        draft = context.user_data.get(_PENDING_EXERCISE_ITEM) or {}
+        if int(draft.get("lesson_id") or 0) != lesson_id:
+            await query.edit_message_text("Черновик не найден.")
+            return
+        try:
+            service.add_exercise_item(
+                lesson_id,
+                str(draft.get("prompt", "")),
+                list(draft.get("options") or []),
+                int(draft.get("correct_index", 0)),
+                draft.get("explanation"),
+            )
+        except ExerciseItemError as error:
+            await query.edit_message_text(str(error))
+            return
+        context.user_data.pop("teacher_action", None)
+        context.user_data.pop(_PENDING_EXERCISE_ITEM, None)
+        await _show_lesson_exercises(update, context, lesson_id, edit=True)
         return
 
     if data.startswith(TEACHER_LESSON_EXERCISES_CANCEL_PREFIX):
@@ -1683,27 +1738,42 @@ async def handle_teacher_message(update: Update, context: ContextTypes.DEFAULT_T
                 await update.effective_message.reply_text("Задание не может быть пустым. Введите текст упражнения:")
                 return True
             draft["prompt"] = text.strip()
-            draft["step"] = "answer"
-            await update.effective_message.reply_text("Введите правильный ответ:")
+            draft["step"] = "options"
+            await update.effective_message.reply_text("Введите варианты ответа, каждый с новой строки (минимум 2, максимум 6):")
             return True
-        if step == "answer":
-            if not text.strip():
-                await update.effective_message.reply_text("Ответ не может быть пустым. Введите правильный ответ:")
+        if step == "options":
+            options = [line.strip() for line in text.splitlines() if line.strip()]
+            if len(options) < 2:
+                await update.effective_message.reply_text("Нужно минимум 2 варианта, каждый с новой строки. Попробуйте ещё раз:")
                 return True
-            draft["answer"] = text.strip()
-            draft["step"] = "hint"
-            await update.effective_message.reply_text("Введите подсказку, или '-' чтобы пропустить:")
+            if len(options) > 6:
+                await update.effective_message.reply_text("Слишком много вариантов: максимум 6. Попробуйте ещё раз:")
+                return True
+            draft["options"] = options
+            draft["step"] = "correct"
+            option_lines = "\n".join(f"{index}. {option}" for index, option in enumerate(options, start=1))
+            await update.effective_message.reply_text(f"Варианты:\n{option_lines}\n\nВведите номер правильного варианта:")
             return True
-        hint = None if text.strip() in {"-", "—"} else text
-        try:
-            service.add_exercise_item(lesson_id, draft.get("prompt", ""), draft.get("answer", ""), hint)
-        except ExerciseItemError as error:
-            await update.effective_message.reply_text(str(error))
+        if step == "correct":
+            options = list(draft.get("options") or [])
+            if not text.strip().isdigit():
+                await update.effective_message.reply_text("Введите число.")
+                return True
+            choice = int(text.strip())
+            if not (1 <= choice <= len(options)):
+                await update.effective_message.reply_text(f"Введите число от 1 до {len(options)}.")
+                return True
+            draft["correct_index"] = choice - 1
+            draft["step"] = "explanation"
+            await update.effective_message.reply_text("Введите объяснение, или '-' чтобы пропустить:")
             return True
-        context.user_data.pop("teacher_action", None)
-        context.user_data.pop(_PENDING_EXERCISE_ITEM, None)
-        await update.effective_message.reply_text("Упражнение добавлено ✅")
-        await _show_lesson_exercises(update, context, lesson_id)
+        if step == "explanation":
+            draft["explanation"] = None if text.strip() in {"-", "—"} else text.strip()
+            draft["step"] = "preview"
+            await update.effective_message.reply_text(_format_exercise_preview(draft), reply_markup=_exercise_preview_keyboard(lesson_id))
+            return True
+        # step == "preview": waiting for the Save/Cancel button, not text - re-show it.
+        await update.effective_message.reply_text(_format_exercise_preview(draft), reply_markup=_exercise_preview_keyboard(lesson_id))
         return True
 
     if action == _IMPORT_LESSON_WORDS:

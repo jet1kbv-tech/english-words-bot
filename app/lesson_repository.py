@@ -107,8 +107,22 @@ class LessonRepository:
     def delete_grammar_item(self, lesson_id: int, item_id: int) -> bool:
         return self.db.delete_grammar_item(lesson_id, item_id)
 
-    def add_exercise_item(self, lesson_id: int, prompt: str, expected_answer: str, hint: str | None = None, position: int = 0) -> sqlite3.Row:
-        return self.db.add_exercise_item(lesson_id, prompt, expected_answer, hint, position)
+    def mark_grammar_item_completed(self, assignment_id: int, grammar_item_id: int) -> sqlite3.Row:
+        return self.db.mark_grammar_item_completed(assignment_id, grammar_item_id)
+
+    def list_grammar_progress(self, assignment_id: int) -> dict[int, sqlite3.Row]:
+        return self.db.list_grammar_progress(assignment_id)
+
+    def add_exercise_item(
+        self,
+        lesson_id: int,
+        prompt: str,
+        options_json: str,
+        correct_option_index: int,
+        explanation: str | None = None,
+        position: int = 0,
+    ) -> sqlite3.Row:
+        return self.db.add_exercise_item(lesson_id, prompt, options_json, correct_option_index, explanation, position)
 
     def list_exercise_items(self, lesson_id: int) -> list[sqlite3.Row]:
         return self.db.list_exercise_items(lesson_id)
@@ -119,8 +133,10 @@ class LessonRepository:
     def delete_exercise_item(self, lesson_id: int, item_id: int) -> bool:
         return self.db.delete_exercise_item(lesson_id, item_id)
 
-    def submit_exercise_answer(self, exercise_id: int, user_id: int, answer: str, is_correct: bool) -> sqlite3.Row:
-        return self.db.submit_exercise_answer(exercise_id, user_id, answer, is_correct)
+    def submit_exercise_answer(
+        self, assignment_id: int, exercise_id: int, user_id: int, selected_option_index: int, is_correct: bool
+    ) -> sqlite3.Row:
+        return self.db.submit_exercise_answer(assignment_id, exercise_id, user_id, selected_option_index, is_correct)
 
-    def list_latest_exercise_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
-        return self.db.list_latest_exercise_answers(lesson_id, user_id)
+    def list_exercise_answers(self, assignment_id: int) -> dict[int, sqlite3.Row]:
+        return self.db.list_exercise_answers(assignment_id)
