@@ -191,6 +191,52 @@ englishbot ALL=(root) NOPASSWD: /usr/bin/systemctl restart english-words-bot, /u
 
 Путь `/opt/english-words-bot` в workflow соответствует примеру из раздела systemd выше; если реальный путь на сервере другой, поправьте `cd` в `.github/workflows/deploy.yml`.
 
+### Автоматический backup базы перед деплоем
+
+Перед тем как workflow обновляет код (`git checkout`/`git reset --hard`) и перезапускает сервис, шаг деплоя запускает `scripts/backup_database.py` прямо на сервере:
+
+1. Скрипт читает `DATABASE_PATH` из `.env` в рабочей директории проекта (`/opt/english-words-bot/.env`) — тот же путь, который использует сам бот.
+2. Копирует базу через SQLite online backup API (`sqlite3.Connection.backup`), а не простым копированием файла — это безопасно, даже если бот в этот момент ещё работает и пишет в базу.
+3. Проверяет копию через `PRAGMA integrity_check`.
+4. Кладёт копию рядом с базой, в поддиректорию `backups/`, с именем вида `<имя-базы>.pre-deploy-<UTC-таймстамп>`, например: `/opt/english-words-bot/backups/english_words_bot.sqlite3.pre-deploy-20260722-104252`.
+
+Деплой выполняется как один bash-скрипт с `set -e`: если база не найдена, backup не создался или `integrity_check` не вернул `ok`, скрипт завершается с ошибкой до `git checkout`/`git reset --hard` и до `systemctl restart` — код на сервере и запущенный сервис не трогаются, текущая production-версия продолжает работать без изменений.
+
+Скрипт запускается через `git show origin/main:scripts/backup_database.py`, а не напрямую из рабочей копии — так он подхватывается уже на первом деплое после того, как этот файл появится в `main`, даже если текущая рабочая копия на сервере ещё не содержит `scripts/backup_database.py`.
+
+Старые backup-файлы не удаляются автоматически — периодически проверяйте `backups/` и подчищайте вручную, если место на диске становится проблемой.
+
+### Восстановление базы из backup
+
+Если после деплоя обнаружилась порча базы (например, миграция или новая версия приложения повредили данные), восстановление делается вручную на сервере:
+
+```bash
+# 1. Остановить сервис, чтобы никто не писал в базу во время восстановления
+sudo systemctl stop english-words-bot
+
+# 2. Посмотреть доступные backup-файлы (самый свежий — с наибольшим таймстампом)
+ls -la /opt/english-words-bot/backups/
+
+# 3. На всякий случай сохранить текущую (повреждённую) базу перед перезаписью
+cp /opt/english-words-bot/english_words_bot.sqlite3 \
+   /opt/english-words-bot/english_words_bot.sqlite3.before-restore
+
+# 4. Скопировать нужный backup поверх рабочей базы (подставьте актуальное имя файла)
+cp /opt/english-words-bot/backups/english_words_bot.sqlite3.pre-deploy-20260722-104252 \
+   /opt/english-words-bot/english_words_bot.sqlite3
+
+# 5. Опционально: убедиться, что восстановленный файл целый
+sqlite3 /opt/english-words-bot/english_words_bot.sqlite3 "PRAGMA integrity_check;"
+# либо, если sqlite3 CLI не установлен:
+python3 -c "import sqlite3; c=sqlite3.connect('/opt/english-words-bot/english_words_bot.sqlite3'); print(c.execute('PRAGMA integrity_check').fetchone())"
+
+# 6. Запустить сервис обратно
+sudo systemctl start english-words-bot
+sudo systemctl status english-words-bot
+```
+
+Реальное имя файла базы и путь берутся из `DATABASE_PATH` в `/opt/english-words-bot/.env` (по умолчанию `english_words_bot.sqlite3` в корне проекта) — команды выше используют путь по умолчанию, поправьте его, если в `.env` задано другое значение.
+
 ## Схема SQLite
 
 Бот создаёт таблицы:
