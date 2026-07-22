@@ -72,7 +72,13 @@ python main.py
 | `BOT_TOKEN` | Telegram Bot API token. Обязательная переменная. | — |
 | `DATABASE_PATH` | Путь до SQLite-файла. | `english_words_bot.sqlite3` |
 | `LOG_LEVEL` | Уровень логирования Python. | `INFO` |
+| `ALLOWED_USERNAMES` | Username-ы студентов с базовым доступом, через запятую (`@` и регистр не важны). | `privetnormalno` |
+| `ADMIN_USERNAMES` | Username-ы с ролью `ADMIN`, через запятую. | `wp_bvv` |
+| `TEACHER_USERNAMES` | Username-ы с ролью `TEACHER`, через запятую. | `romateaches` |
+| `DISPLAY_NAMES` | Отображаемые имена вида `username:Имя`, через запятую. | `wp_bvv:Вова,privetnormalno:Саша,romateaches:Roma` |
 | `OPENAI_API_KEY` | Зарезервировано для будущих AI-функций. Сейчас не используется. | — |
+
+Если `ALLOWED_USERNAMES` / `ADMIN_USERNAMES` / `TEACHER_USERNAMES` / `DISPLAY_NAMES` не заданы в `.env`, `app/config.py` подставляет ровно те же значения, что были захардкожены раньше — существующие развёртывания без этих переменных продолжат работать без изменений. Учеников, добавленных динамически через кнопку `➕ Добавить ученика`, в `.env` перечислять не нужно — они хранятся в таблице `student_access` и не связаны с этими переменными.
 
 
 ## Seed words
