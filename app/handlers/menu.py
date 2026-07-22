@@ -10,6 +10,7 @@ from app.handlers.training import correct_last_negative_text_answer, correct_las
 from app.handlers.words import show_dictionary
 from app.handlers.admin import handle_admin_message
 from app.handlers.teacher import handle_teacher_message
+from app.handlers.teacher_ai_draft import handle_teacher_ai_draft_message
 from app.handlers.student_lessons import handle_student_lesson_message
 from app.keyboards import DONT_KNOW, FORGET, GAME_SESSION, HELP, HELP_GETTING_STARTED, I_WAS_RIGHT, MY_MISTAKES, KNOW, MISTAKE, MY_CARDS, NEXT_CARD, MY_WORDS, PROGRESS, REMEMBER, SHOW_TRANSLATION, SKIP, STOP, WORD_EXCHANGE, main_menu_keyboard, teacher_menu_keyboard
 from app.tutorial.tutorial_service import HELP_BACK, TUTORIAL_BACK, TUTORIAL_CLOSE, TUTORIAL_FINISH, TUTORIAL_NEXT, clear_tutorial, current_tutorial, format_help_screen, format_tutorial_step, help_keyboard, role_tutorial_key, start_tutorial_state, tutorial_keyboard
@@ -101,6 +102,8 @@ async def menu_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if await handle_admin_message(update, context):
         return
     if await handle_teacher_message(update, context):
+        return
+    if await handle_teacher_ai_draft_message(update, context):
         return
     if await handle_student_lesson_message(update, context):
         return

@@ -244,7 +244,7 @@ class TeacherStudentAccessTests(unittest.IsolatedAsyncioTestCase):
             (TEACHER_LESSON_GRAMMAR_PREFIX, "Пока нет тем."),
             (TEACHER_LESSON_EXERCISES_PREFIX, "Пока нет упражнений."),
             (TEACHER_LESSON_HOMEWORK_PREFIX, "Пока нет заданий."),
-            (TEACHER_LESSON_AI_PREFIX, "Скоро здесь можно будет сгенерировать слова"),
+            (TEACHER_LESSON_AI_PREFIX, "Здесь можно сгенерировать черновик"),
         ]:
             with self.subTest(prefix=prefix):
                 update = self._callback_update(f"{prefix}{lesson['id']}")

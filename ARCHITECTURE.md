@@ -276,7 +276,7 @@ Daily goal:
 
 ## 7. AI
 
-AI используется только для проверки текстовых ответов в игровых сессиях (`game=True`). Обычная тренировка и exchange self-check не используют AI.
+AI используется для проверки текстовых ответов в игровых сессиях (`game=True`), для автоперевода слов при добавлении в урок и для генерации черновика содержимого урока (AI Draft Generator v1, см. 7.4). Обычная тренировка и exchange self-check не используют AI.
 
 ### 7.1 Provider selection
 
@@ -307,6 +307,36 @@ Provider просит модель вернуть JSON:
 - Ответ нормализуется: lower-case, замена `ё` на `е`, схлопывание пробелов, trim.
 - В направлении `RU_TO_EN` ответ должен точно совпасть с `english` после нормализации.
 - В направлении `EN_TO_RU` ответ должен совпасть с одним из вариантов `translation`, разделённых `/`, `,`, `;`.
+
+### 7.4 Lesson Draft Generator (AI Draft Generator v1)
+
+Первый шаг к будущему AI Lesson Builder: учитель может сгенерировать **черновик** содержимого DRAFT-урока (слова, грамматика, упражнения) с помощью AI. Черновик существует только в памяти Telegram-сессии и не сохраняется в SQLite. Ключевой принцип: AI не создаёт урок напрямую, не пишет в lesson tables и не публикует/назначает контент ученику — сохранение и объединение с существующим контентом запланированы в отдельном будущем PR.
+
+Модули (расширяют существующий пакет `app/ai/`, второй HTTP-клиент не создаётся):
+
+- `app/ai/lesson_draft_dto.py` — типизированные DTO (`@dataclass(frozen=True)`, без Pydantic): `LessonDraftGenerationRequest`, `GeneratedWordDraft`, `GeneratedGrammarDraft`, `GeneratedExerciseDraft`, `GeneratedLessonDraft`; лимиты (`ALLOWED_LEVELS = ("A1".."C1")`, допустимые значения счётчиков, лимиты длины полей); типы ошибок `DraftRequestValidationError`, `DraftGenerationError`, `DraftResponseParseError`, `DraftResponseValidationError`; функция `build_generation_request(...)`, которая валидирует параметры на уровне сервиса независимо от Telegram callback data (защита от подделанных значений).
+- `app/ai/lesson_draft_prompt.py` — `SYSTEM_PROMPT` и `build_lesson_draft_user_prompt(request)`, по образцу существующего `word_translation_prompt.py`. Системный промпt требует строго один JSON-объект без markdown/пояснений, соблюдение CEFR-уровня, только single-choice упражнения (2–6 уникальных вариантов, один правильный, `correct_option_index` — 0-based, однозначный правильный ответ), отсутствие 18+/насилия/политики и точное соответствие запрошенным количествам элементов.
+- `app/ai/polza_provider.py` — добавлен один новый метод `generate_lesson_draft(*, system_prompt, user_prompt) -> str | None`, использующий `response_format={"type": "json_object"}` и `temperature=0.7` (выше, чем у остальных методов, — специально, чтобы регенерация давала заметно другой результат). Метод следует существующей конвенции provider'а: любая ошибка (нет клиента, сетевая ошибка, таймаут) даёт `None`, без исключений наружу.
+- `app/ai/lesson_draft_generator.py` — оркестрация: валидирует запрос, строит промпт, вызывает provider, извлекает JSON (безопасно снимает fenced code block ```/```json```, без эвристик "исправления" сломанного JSON), парсит через `json.loads`, строго проверяет структуру и бизнес-инварианты, строит `GeneratedLessonDraft`. Telegram-обработчик не парсит JSON модели сам — только вызывает `generate_lesson_draft(request)`.
+
+Строгая валидация ответа AI (модель не считается доверенной даже после успешного `json.loads`):
+
+- Верхний уровень — только объект с ключами `topic`, `level`, `words`, `grammar`, `exercises`; неизвестные ключи отклоняются (строгий контракт).
+- Количества элементов должны точно совпадать с запрошенными (`len(words) == words_count` и т.д.) — "почти правильный" ответ не принимается.
+- Слова: `source`/`translation` непустые (≤100/≤200 символов), `example` строка или `null` (≤300), `source` уникален без учёта регистра, `source != translation`, лишние ключи запрещены.
+- Грамматика: `title` (≤150) и `explanation` (≤1500) непустые, `example` опционален (≤500), `title` уникален без учёта регистра.
+- Упражнения: `prompt` (≤500), `options` — список из 2–6 уникальных непустых строк (≤200 каждая), `correct_option_index` — `int`, не `bool`, в допустимом диапазоне; `explanation` опционален (≤800).
+
+Ошибки пользователю показываются без технических деталей (без stack trace, сырого JSON, URL провайдера или токена):
+
+- Сетевая/API-ошибка: «Не удалось получить ответ от AI-сервиса. Попробуйте ещё раз немного позже.»
+- Невалидный JSON/структура: «AI вернул некорректный черновик. Можно попробовать сгенерировать его ещё раз.»
+
+Retry в этом PR — только ручной: одна попытка на нажатие кнопки, без автоматического многошагового цикла исправления. Обработчик `app/handlers/teacher_ai_draft.py` хранит состояние мастера в `context.user_data["teacher_ai_draft"]` (тема, уровень, счётчики, флаг `in_progress`, сгенерированный черновик, `generated_at`), привязанное к конкретному `lesson_id`; флаг `in_progress` защищает от двойного нажатия и снимается через `finally` при любом исходе. Регенерация (`🔄 Сгенерировать заново` / `🔄 Попробовать ещё раз`) не удаляет старый черновик до успешного ответа AI — если новая генерация завершилась ошибкой, предыдущий валидный черновик остаётся доступен для просмотра.
+
+Просмотр черновика постраничный (слова — по 5 на страницу, грамматика и упражнения — по одной карточке на страницу, с показом правильного варианта — это teacher preview). Callback data не содержит текста черновика, только `lesson_id`/раздел/страницу; каждый callback заново проверяет права (`is_teacher`), статус урока (`DRAFT`) и совпадение `lesson_id` состояния с `lesson_id` из callback. При потере состояния (например, после перезапуска бота) показывается «Черновик больше недоступен. Сгенерируйте его заново.» — это ожидаемое ограничение v1: черновик не переживает перезапуск процесса.
+
+Точка входа — кнопка `✨ Создать контент с AI` на экране `🤖 AI-помощник` внутри DRAFT-урока (доступна только teacher/admin через существующий `RoleResolver`/`is_teacher`). Если в уроке уже есть контент, перед началом мастера показывается предупреждение о том, что AI создаст отдельный черновик и не изменит существующие материалы. Логи содержат количество запрошенных элементов, уровень, длину ответа AI и класс исключения, но не полный prompt/ответ модели и не API-ключ.
 
 ## 8. Database tables
 
@@ -412,7 +442,7 @@ Future statuses:
 - `PUBLISHED`
 - `ARCHIVED`
 
-Teacher Lesson UI currently supports listing and creating draft lessons. Teacher Lesson Detail is organized as sections: Слова, Грамматика, Упражнения, Домашнее задание, AI-помощник (labels russified). Слова, Грамматика, Упражнения and Домашнее задание have real list/add/detail/delete screens (manual content only); AI-помощник remains a navigation placeholder — AI-assisted content generation is a separate future PR.
+Teacher Lesson UI currently supports listing and creating draft lessons. Teacher Lesson Detail is organized as sections: Слова, Грамматика, Упражнения, Домашнее задание, AI-помощник (labels russified). Слова, Грамматика, Упражнения and Домашнее задание have real list/add/detail/delete screens (manual content only); AI-помощник now has a real entry screen (`✨ Создать контент с AI`, gated on `status == DRAFT`) that starts the AI Draft Generator v1 wizard described in 7.4 — it only produces an in-memory draft for preview, it does not write words/grammar/exercises into the lesson. Saving/merging the generated draft into the real lesson is a separate future PR.
 
 В будущем урок будет связывать четыре направления данных:
 

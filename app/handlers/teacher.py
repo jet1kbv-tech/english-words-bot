@@ -9,6 +9,7 @@ from app.auth.roles import Role, RoleResolver
 from app.config import Settings
 from app.database import Database
 from app.ai.service import generate_word_translations
+from app.handlers.teacher_ai_draft import show_ai_draft_entry
 from app.handlers.training import _today_moscow
 from app.keyboards import ADD_STUDENT, EXIT_STUDENT_MODE, TEACHER_CREATE_LESSON, TEACHER_IMPERSONATE, TEACHER_LESSONS, TEACHER_MY_LESSONS, TEACHER_PROGRESS, TEACHER_STUDENTS, main_menu_keyboard, teacher_lessons_keyboard, teacher_menu_keyboard
 from app.lesson_metadata import lesson_display_name
@@ -1345,6 +1346,9 @@ async def handle_teacher_lesson_callback(update: Update, context: ContextTypes.D
             return
         if prefix == TEACHER_LESSON_HOMEWORK_PREFIX:
             await _show_lesson_homework(update, context, lesson_id, edit=True)
+            return
+        if prefix == TEACHER_LESSON_AI_PREFIX:
+            await show_ai_draft_entry(update, context, lesson_id, summary, edit=True)
             return
         await query.edit_message_text(_format_lesson_section(summary, section_by_prefix[prefix]), reply_markup=_lesson_section_keyboard(lesson_id))
         return
