@@ -6,6 +6,8 @@ import json
 
 from app.ai.lesson_draft_dto import LessonDraftGenerationRequest
 
+LESSON_DRAFT_PROMPT_VERSION = 1
+
 SYSTEM_PROMPT = (
     "Ты — автор структурированного учебного контента для урока английского языка. "
     "Объяснения и переводы пиши на русском языке. Изучаемый язык, примеры и упражнения — "
@@ -22,6 +24,9 @@ SYSTEM_PROMPT = (
     "Объяснение грамматики должно быть коротким и соответствовать уровню. "
     "Слова не должны повторяться (без учёта регистра), поле source и поле translation "
     "не должны быть пустыми. Примеры должны быть короткими. "
+    "Не включай в JSON никакие поля, кроме перечисленных ниже: не добавляй lesson_id, user_id, "
+    "status, published, callback_data или любые другие технические/служебные поля — верни "
+    "только учебный контент по указанной схеме. "
     "Верни JSON строго такой структуры: "
     '{"topic": string, "level": string, '
     '"words": [{"source": string, "translation": string, "example": string|null}], '

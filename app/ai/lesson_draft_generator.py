@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from app.ai.lesson_draft_dto import (
@@ -33,10 +36,11 @@ from app.ai.lesson_draft_dto import (
     GeneratedGrammarDraft,
     GeneratedLessonDraft,
     GeneratedWordDraft,
+    LessonDraftGenerationMetadata,
     LessonDraftGenerationRequest,
     build_generation_request,
 )
-from app.ai.lesson_draft_prompt import SYSTEM_PROMPT, build_lesson_draft_user_prompt
+from app.ai.lesson_draft_prompt import LESSON_DRAFT_PROMPT_VERSION, SYSTEM_PROMPT, build_lesson_draft_user_prompt
 from app.ai.polza_provider import PolzaAIProvider
 
 logger = logging.getLogger(__name__)
@@ -47,8 +51,14 @@ _GRAMMAR_KEYS = {"title", "explanation", "example"}
 _EXERCISE_KEYS = {"prompt", "options", "correct_option_index", "explanation"}
 
 
+def _default_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 async def generate_lesson_draft(
     request: LessonDraftGenerationRequest,
+    *,
+    clock: Callable[[], datetime] = _default_clock,
 ) -> GeneratedLessonDraft:
     validated_request = build_generation_request(
         lesson_id=request.lesson_id,
@@ -76,7 +86,9 @@ async def generate_lesson_draft(
 
     if content is None:
         logger.warning(
-            "Lesson draft AI call returned no content (level=%s, words=%d, grammar=%d, exercises=%d)",
+            "Lesson draft AI call returned no content (provider=%s, model=%s, level=%s, words=%d, grammar=%d, exercises=%d)",
+            provider.name,
+            provider.model,
             validated_request.level,
             validated_request.words_count,
             validated_request.grammar_count,
@@ -87,7 +99,31 @@ async def generate_lesson_draft(
     logger.info("Lesson draft AI response received (length=%d)", len(content))
 
     data = _parse_json_object(content)
-    return _validate_and_build_draft(data, validated_request)
+    topic, level, words, grammar, exercises = _validate_draft_content(data, validated_request)
+
+    metadata = LessonDraftGenerationMetadata(
+        generation_id=uuid.uuid4(),
+        provider=provider.name,
+        model=provider.model,
+        prompt_version=LESSON_DRAFT_PROMPT_VERSION,
+        generated_at=clock(),
+    )
+    logger.info(
+        "Lesson draft generated (generation_id=%s, provider=%s, model=%s, prompt_version=%d)",
+        metadata.generation_id,
+        metadata.provider,
+        metadata.model,
+        metadata.prompt_version,
+    )
+
+    return GeneratedLessonDraft(
+        topic=topic,
+        level=level,
+        words=words,
+        grammar=grammar,
+        exercises=exercises,
+        metadata=metadata,
+    )
 
 
 def _extract_json_object(content: str) -> str:
@@ -271,9 +307,9 @@ def _validate_exercises(raw_exercises: list) -> tuple[GeneratedExerciseDraft, ..
     return tuple(items)
 
 
-def _validate_and_build_draft(
+def _validate_draft_content(
     data: dict, request: LessonDraftGenerationRequest
-) -> GeneratedLessonDraft:
+) -> tuple[str, str, tuple[GeneratedWordDraft, ...], tuple[GeneratedGrammarDraft, ...], tuple[GeneratedExerciseDraft, ...]]:
     _validate_top_level(data, request)
 
     topic = data["topic"].strip()
@@ -285,10 +321,4 @@ def _validate_and_build_draft(
     grammar = _validate_grammar(data["grammar"])
     exercises = _validate_exercises(data["exercises"])
 
-    return GeneratedLessonDraft(
-        topic=topic,
-        level=level,
-        words=words,
-        grammar=grammar,
-        exercises=exercises,
-    )
+    return topic, level, words, grammar, exercises
