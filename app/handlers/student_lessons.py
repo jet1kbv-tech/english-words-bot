@@ -13,10 +13,11 @@ from app.handlers.training import check_translation_task_answer, start_lesson_wo
 from app.keyboards import MY_LESSONS, main_menu_keyboard
 from app.lesson_metadata import lesson_display_name
 from app.lesson_repository import LessonRepository
-from app.lesson_runtime import LessonRuntimeService, LessonSection
-from app.lesson_service import HomeworkTaskError, LessonService
+from app.lesson_runtime import SECTION_ORDER, LessonRuntimeService, LessonSection
+from app.lesson_service import ExerciseItemError, HomeworkTaskError, LessonService
 
 _PENDING_HOMEWORK_ANSWER = "pending_homework_answer"
+_PENDING_EXERCISE_ANSWER = "pending_exercise_answer"
 
 STUDENT_LESSONS_LIST_CALLBACK = "student:lessons:list"
 STUDENT_LESSON_OPEN_PREFIX = "student:lesson:open:"
@@ -24,6 +25,10 @@ STUDENT_LESSON_START_PREFIX = "student:lesson:start:"
 STUDENT_LESSON_WORDS_CARDS_PREFIX = "student:lesson:words:cards:"
 STUDENT_LESSON_WORDS_TYPE_PREFIX = "student:lesson:words:type:"
 STUDENT_LESSON_WORDS_PREFIX = "student:lesson:words:"
+STUDENT_LESSON_NEXT_STAGE_PREFIX = "student:lesson:next:"
+STUDENT_LESSON_GRAMMAR_PREFIX = "student:lesson:grammar:"
+STUDENT_LESSON_EXERCISE_TASK_PREFIX = "student:lesson:exercises:task:"
+STUDENT_LESSON_EXERCISES_PREFIX = "student:lesson:exercises:"
 STUDENT_LESSON_HOMEWORK_TASK_PREFIX = "student:lesson:homework:task:"
 STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX = "student:lesson:homework:quiz:"
 STUDENT_LESSON_HOMEWORK_PREFIX = "student:lesson:homework:"
@@ -34,6 +39,10 @@ STUDENT_LESSON_CALLBACK_PREFIXES = (
     STUDENT_LESSON_WORDS_CARDS_PREFIX,
     STUDENT_LESSON_WORDS_TYPE_PREFIX,
     STUDENT_LESSON_WORDS_PREFIX,
+    STUDENT_LESSON_NEXT_STAGE_PREFIX,
+    STUDENT_LESSON_GRAMMAR_PREFIX,
+    STUDENT_LESSON_EXERCISE_TASK_PREFIX,
+    STUDENT_LESSON_EXERCISES_PREFIX,
     STUDENT_LESSON_HOMEWORK_TASK_PREFIX,
     STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX,
     STUDENT_LESSON_HOMEWORK_PREFIX,
@@ -63,7 +72,32 @@ def _student_lessons_keyboard(lessons: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _current_section(summary) -> LessonSection:
+    stored = summary["current_section"] if hasattr(summary, "keys") and "current_section" in summary.keys() else None
+    try:
+        return LessonSection(stored) if stored else LessonSection.WORDS
+    except ValueError:
+        return LessonSection.WORDS
+
+
+def _section_icon(current: LessonSection, section: LessonSection) -> str:
+    if section is current:
+        return "🟢"
+    if SECTION_ORDER.index(section) < SECTION_ORDER.index(current):
+        return "✅"
+    return "⚪"
+
+
+def _format_lesson_status(current: LessonSection) -> str:
+    if current is LessonSection.FINISHED:
+        return "Завершён ✅"
+    if current is LessonSection.WORDS:
+        return "Не начат"
+    return "В процессе"
+
+
 def _format_student_lesson_overview(summary) -> str:
+    current = _current_section(summary)
     return "\n".join([
         "📚 Урок",
         "",
@@ -71,14 +105,14 @@ def _format_student_lesson_overview(summary) -> str:
         "",
         "Статус:",
         "",
-        "Не начат",
+        _format_lesson_status(current),
         "",
         "Прогресс урока",
         "",
-        "🟢 Слова",
-        "⚪ Грамматика",
-        "⚪ Упражнения",
-        "⚪ Домашнее задание",
+        f"{_section_icon(current, LessonSection.WORDS)} Слова",
+        f"{_section_icon(current, LessonSection.GRAMMAR)} Грамматика",
+        f"{_section_icon(current, LessonSection.EXERCISES)} Упражнения",
+        f"{_section_icon(current, LessonSection.HOMEWORK)} Домашнее задание",
         "",
         f"Слова: {_count(summary, 'words_count')}",
         f"Грамматика: {_count(summary, 'grammar_count')}",
@@ -99,10 +133,21 @@ def _lesson_unavailable_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои уроки", callback_data=STUDENT_LESSONS_LIST_CALLBACK)]])
 
 
+_SECTION_OPEN_PREFIXES = {
+    LessonSection.WORDS: STUDENT_LESSON_WORDS_PREFIX,
+    LessonSection.GRAMMAR: STUDENT_LESSON_GRAMMAR_PREFIX,
+    LessonSection.EXERCISES: STUDENT_LESSON_EXERCISES_PREFIX,
+    LessonSection.HOMEWORK: STUDENT_LESSON_HOMEWORK_PREFIX,
+}
+
+
 def _start_section_keyboard(lesson_id: int, section: LessonSection) -> InlineKeyboardMarkup:
-    open_callback = f"{STUDENT_LESSON_WORDS_PREFIX}{lesson_id}" if section is LessonSection.WORDS else f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}"
+    if section is LessonSection.FINISHED:
+        return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Мои уроки", callback_data=STUDENT_LESSONS_LIST_CALLBACK)]])
+    open_prefix = _SECTION_OPEN_PREFIXES[section]
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("▶ Открыть", callback_data=open_callback)],
+        [InlineKeyboardButton("▶ Открыть", callback_data=f"{open_prefix}{lesson_id}")],
+        [InlineKeyboardButton("▶ Далее", callback_data=f"{STUDENT_LESSON_NEXT_STAGE_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
     ])
 
@@ -111,10 +156,25 @@ def _lesson_back_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")]])
 
 
+_SECTION_TITLES = {
+    LessonSection.WORDS: "📖 Слова",
+    LessonSection.GRAMMAR: "📝 Грамматика",
+    LessonSection.EXERCISES: "✏️ Упражнения",
+    LessonSection.HOMEWORK: "🏠 Домашнее задание",
+}
+_SECTION_COUNT_KEYS = {
+    LessonSection.WORDS: ("words_count", "слова"),
+    LessonSection.GRAMMAR: ("grammar_count", "темы"),
+    LessonSection.EXERCISES: ("exercises_count", "упражнений"),
+    LessonSection.HOMEWORK: ("homework_count", "заданий"),
+}
+
+
 def _format_next_section(summary, section: LessonSection) -> str:
-    if section is LessonSection.WORDS:
-        return "\n".join(["Следующий этап", "", "📖 Слова", "", f"{_count(summary, 'words_count')} слова"])
-    return "Следующий этап будет добавлен позже."
+    if section is LessonSection.FINISHED:
+        return "\n".join(["🎉 Урок завершён", "", "Вы прошли все доступные разделы урока."])
+    count_key, noun = _SECTION_COUNT_KEYS[section]
+    return "\n".join(["Следующий этап", "", _SECTION_TITLES[section], "", f"{_count(summary, count_key)} {noun}"])
 
 
 def _format_words_stage(summary) -> str:
@@ -141,6 +201,70 @@ def _words_stage_keyboard(lesson_id: int, has_words: bool) -> InlineKeyboardMark
         [InlineKeyboardButton("✍️ Ввод", callback_data=f"{STUDENT_LESSON_WORDS_TYPE_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")],
     ])
+
+
+def _format_grammar_stage(items: list) -> str:
+    if not items:
+        return "\n".join(["📝 Грамматика", "", "В этом уроке пока нет грамматики.", "", "Попросите преподавателя добавить материал."])
+    lines = ["📝 Грамматика", ""]
+    for index, item in enumerate(items, start=1):
+        lines.append(f"{index}. {item['title']}")
+        lines.append("")
+        lines.append(str(item["explanation"]))
+        if item["example"]:
+            lines.append("")
+            lines.append(f"Example: {item['example']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _grammar_stage_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")]])
+
+
+def _exercise_status_icon(answer) -> str:
+    if answer is None:
+        return "⚪"
+    is_correct = answer["is_correct"] if hasattr(answer, "keys") and "is_correct" in answer.keys() else None
+    return "✅" if is_correct else "❌"
+
+
+def _format_exercises_stage(items: list, answers: dict) -> str:
+    if not items:
+        return "\n".join(["✏️ Упражнения", "", "В этом уроке пока нет упражнений.", "", "Попросите преподавателя добавить упражнения."])
+    lines = ["✏️ Упражнения", ""]
+    for index, item in enumerate(items, start=1):
+        icon = _exercise_status_icon(answers.get(int(item["id"])))
+        prompt = str(item["prompt"])
+        short_prompt = prompt if len(prompt) <= 50 else prompt[:47] + "…"
+        lines.append(f"{index}. {icon} {short_prompt}")
+    return "\n".join(lines)
+
+
+def _exercises_stage_keyboard(lesson_id: int, items: list, answers: dict) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            f"{index}. {_exercise_status_icon(answers.get(int(item['id'])))} {str(item['prompt'])[:30]}",
+            callback_data=f"{STUDENT_LESSON_EXERCISE_TASK_PREFIX}{lesson_id}:{item['id']}",
+        )]
+        for index, item in enumerate(items, start=1)
+    ]
+    rows.append([InlineKeyboardButton("⬅️ Урок", callback_data=f"{STUDENT_LESSON_OPEN_PREFIX}{lesson_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def _format_exercise_task(item, answer=None) -> str:
+    lines = ["✏️ Упражнение", "", str(item["prompt"]), "", "✍️ Напишите ответ в чат."]
+    if answer is not None:
+        is_correct = bool(answer["is_correct"]) if hasattr(answer, "keys") and "is_correct" in answer.keys() else None
+        lines.append("")
+        lines.append(f"Ваш последний ответ: {answer['answer']}")
+        lines.append("✅ Верно" if is_correct else "❌ Неверно")
+    return "\n".join(lines)
+
+
+def _exercise_task_keyboard(lesson_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Упражнения", callback_data=f"{STUDENT_LESSON_EXERCISES_PREFIX}{lesson_id}")]])
 
 
 def _homework_status_icon(answer) -> str:
@@ -270,12 +394,46 @@ async def _handle_pending_homework_answer(update: Update, context: ContextTypes.
     return True
 
 
+async def _handle_pending_exercise_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, pending: dict) -> bool:
+    user = await require_user(update, context)
+    if user is None or update.effective_message is None:
+        return False
+    lesson_id = int(pending.get("lesson_id") or 0)
+    exercise_id = int(pending.get("exercise_id") or 0)
+    repo = _repository(context)
+    item = repo.get_exercise_item(lesson_id, exercise_id)
+    if item is None:
+        context.user_data.pop(_PENDING_EXERCISE_ANSWER, None)
+        return False
+
+    answer_text = update.effective_message.text or ""
+    service = LessonService(repo)
+    try:
+        is_correct, _row = service.submit_exercise_answer(lesson_id, exercise_id, int(user["id"]), answer_text)
+    except ExerciseItemError as error:
+        await update.effective_message.reply_text(str(error))
+        return True
+
+    context.user_data.pop(_PENDING_EXERCISE_ANSWER, None)
+    if is_correct:
+        lines = ["✅ Верно!"]
+    else:
+        lines = ["❌ Неверно.", f"Правильный ответ: {item['expected_answer']}"]
+        if item["hint"]:
+            lines.append(f"Подсказка: {item['hint']}")
+    await update.effective_message.reply_text("\n".join(lines), reply_markup=_exercise_task_keyboard(lesson_id))
+    return True
+
+
 async def handle_student_lesson_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if update.effective_message is None or not _is_student_flow(update, context):
         return False
-    pending = context.user_data.get(_PENDING_HOMEWORK_ANSWER)
-    if pending:
-        return await _handle_pending_homework_answer(update, context, pending)
+    pending_homework = context.user_data.get(_PENDING_HOMEWORK_ANSWER)
+    if pending_homework:
+        return await _handle_pending_homework_answer(update, context, pending_homework)
+    pending_exercise = context.user_data.get(_PENDING_EXERCISE_ANSWER)
+    if pending_exercise:
+        return await _handle_pending_exercise_answer(update, context, pending_exercise)
     if update.effective_message.text == MY_LESSONS:
         await show_student_lessons(update, context)
         return True
@@ -327,6 +485,20 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
             await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
             return
         await query.edit_message_text(_format_next_section(summary, section), reply_markup=_start_section_keyboard(lesson_id, section))
+        return
+    if data.startswith(STUDENT_LESSON_NEXT_STAGE_PREFIX):
+        lesson_id_text = data.removeprefix(STUDENT_LESSON_NEXT_STAGE_PREFIX)
+        lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
+        summary = repo.get_student_lesson(lesson_id, user["username"]) if lesson_id > 0 else None
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        next_section = LessonRuntimeService(repo).advance_section(lesson_id, user["username"])
+        if next_section is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        summary = repo.get_student_lesson(lesson_id, user["username"])
+        await query.edit_message_text(_format_next_section(summary, next_section), reply_markup=_start_section_keyboard(lesson_id, next_section))
         return
     if data.startswith(STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX):
         payload = data.removeprefix(STUDENT_LESSON_HOMEWORK_QUIZ_ANSWER_PREFIX)
@@ -384,7 +556,10 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
         context.user_data.pop(_PENDING_HOMEWORK_ANSWER, None)
         tasks = repo.list_homework_tasks(lesson_id)
         answers = repo.list_latest_homework_answers(lesson_id, int(user["id"]))
-        await query.edit_message_text(_format_student_homework_list(summary, tasks, answers), reply_markup=_student_homework_list_keyboard(lesson_id, tasks, answers))
+        await query.edit_message_text(
+            _format_student_homework_list(summary, tasks, answers),
+            reply_markup=_student_homework_list_keyboard(lesson_id, tasks, answers),
+        )
         return
     for mode_prefix, typed in ((STUDENT_LESSON_WORDS_CARDS_PREFIX, False), (STUDENT_LESSON_WORDS_TYPE_PREFIX, True)):
         if not data.startswith(mode_prefix):
@@ -410,3 +585,43 @@ async def handle_student_lesson_callback(update: Update, context: ContextTypes.D
             return
         has_words = _count(summary, "words_count") > 0
         await query.edit_message_text(_format_words_stage(summary), reply_markup=_words_stage_keyboard(lesson_id, has_words=has_words))
+        return
+    if data.startswith(STUDENT_LESSON_GRAMMAR_PREFIX):
+        lesson_id_text = data.removeprefix(STUDENT_LESSON_GRAMMAR_PREFIX)
+        lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
+        summary = repo.get_student_lesson(lesson_id, user["username"]) if lesson_id > 0 else None
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        items = repo.list_grammar_items(lesson_id)
+        await query.edit_message_text(_format_grammar_stage(items), reply_markup=_grammar_stage_keyboard(lesson_id))
+        return
+    if data.startswith(STUDENT_LESSON_EXERCISE_TASK_PREFIX):
+        ids = _two_int_ids_from_callback(data, STUDENT_LESSON_EXERCISE_TASK_PREFIX)
+        if ids is None:
+            return
+        lesson_id, exercise_id = ids
+        summary = repo.get_student_lesson(lesson_id, user["username"])
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        item = repo.get_exercise_item(lesson_id, exercise_id)
+        if item is None:
+            await query.edit_message_text("Упражнение не найдено.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        answers = repo.list_latest_exercise_answers(lesson_id, int(user["id"]))
+        context.user_data[_PENDING_EXERCISE_ANSWER] = {"lesson_id": lesson_id, "exercise_id": exercise_id}
+        await query.edit_message_text(_format_exercise_task(item, answers.get(exercise_id)), reply_markup=_exercise_task_keyboard(lesson_id))
+        return
+    if data.startswith(STUDENT_LESSON_EXERCISES_PREFIX):
+        lesson_id_text = data.removeprefix(STUDENT_LESSON_EXERCISES_PREFIX)
+        lesson_id = int(lesson_id_text) if lesson_id_text.isdigit() else 0
+        summary = repo.get_student_lesson(lesson_id, user["username"]) if lesson_id > 0 else None
+        if summary is None:
+            await query.edit_message_text("Урок недоступен.", reply_markup=_lesson_unavailable_keyboard())
+            return
+        context.user_data.pop(_PENDING_EXERCISE_ANSWER, None)
+        items = repo.list_exercise_items(lesson_id)
+        answers = repo.list_latest_exercise_answers(lesson_id, int(user["id"]))
+        await query.edit_message_text(_format_exercises_stage(items, answers), reply_markup=_exercises_stage_keyboard(lesson_id, items, answers))
+        return

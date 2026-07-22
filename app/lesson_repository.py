@@ -91,3 +91,36 @@ class LessonRepository:
 
     def get_student_lesson(self, lesson_id: int, student_username: str) -> sqlite3.Row | None:
         return self.db.get_student_lesson(lesson_id, student_username)
+
+    def set_student_lesson_section(self, lesson_id: int, student_username: str, section: str) -> None:
+        self.db.set_student_lesson_section(lesson_id, student_username, section)
+
+    def add_grammar_item(self, lesson_id: int, title: str, explanation: str, example: str | None = None, position: int = 0) -> sqlite3.Row:
+        return self.db.add_grammar_item(lesson_id, title, explanation, example, position)
+
+    def list_grammar_items(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.db.list_grammar_items(lesson_id)
+
+    def get_grammar_item(self, lesson_id: int, item_id: int) -> sqlite3.Row | None:
+        return self.db.get_grammar_item(lesson_id, item_id)
+
+    def delete_grammar_item(self, lesson_id: int, item_id: int) -> bool:
+        return self.db.delete_grammar_item(lesson_id, item_id)
+
+    def add_exercise_item(self, lesson_id: int, prompt: str, expected_answer: str, hint: str | None = None, position: int = 0) -> sqlite3.Row:
+        return self.db.add_exercise_item(lesson_id, prompt, expected_answer, hint, position)
+
+    def list_exercise_items(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.db.list_exercise_items(lesson_id)
+
+    def get_exercise_item(self, lesson_id: int, item_id: int) -> sqlite3.Row | None:
+        return self.db.get_exercise_item(lesson_id, item_id)
+
+    def delete_exercise_item(self, lesson_id: int, item_id: int) -> bool:
+        return self.db.delete_exercise_item(lesson_id, item_id)
+
+    def submit_exercise_answer(self, exercise_id: int, user_id: int, answer: str, is_correct: bool) -> sqlite3.Row:
+        return self.db.submit_exercise_answer(exercise_id, user_id, answer, is_correct)
+
+    def list_latest_exercise_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
+        return self.db.list_latest_exercise_answers(lesson_id, user_id)

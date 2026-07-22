@@ -171,6 +171,37 @@ class Database:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS lesson_grammar_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                title TEXT NOT NULL,
+                explanation TEXT NOT NULL,
+                example TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS lesson_exercise_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lesson_id INTEGER NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                prompt TEXT NOT NULL,
+                expected_answer TEXT NOT NULL,
+                hint TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS lesson_exercise_answers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exercise_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                answer TEXT NOT NULL,
+                is_correct INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS user_tutorials (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -274,6 +305,9 @@ class Database:
             """
         )
         self._connection.commit()
+        columns = {row["name"] for row in self.fetchall("PRAGMA table_info(lesson_students)")}
+        if "current_section" not in columns:
+            self.execute("ALTER TABLE lesson_students ADD COLUMN current_section TEXT NOT NULL DEFAULT 'WORDS'")
 
     def _ensure_tutorial_notifications_schema(self) -> None:
         self._connection.executescript(
@@ -503,8 +537,8 @@ class Database:
                    (SELECT COUNT(*) FROM lesson_words WHERE lesson_id = lessons.id) AS words_count,
                    (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_tasks_count,
                    (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_count,
-                   0 AS grammar_count,
-                   0 AS exercises_count
+                   (SELECT COUNT(*) FROM lesson_grammar_items WHERE lesson_id = lessons.id) AS grammar_count,
+                   (SELECT COUNT(*) FROM lesson_exercise_items WHERE lesson_id = lessons.id) AS exercises_count
             FROM lessons
             WHERE lessons.id = ?
             """,
@@ -583,11 +617,12 @@ class Database:
         return self.fetchone(
             """
             SELECT lessons.*, lesson_students.assigned_at AS assigned_at,
+                   lesson_students.current_section AS current_section,
                    (SELECT COUNT(*) FROM lesson_words WHERE lesson_id = lessons.id) AS words_count,
                    (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_tasks_count,
                    (SELECT COUNT(*) FROM homework_tasks WHERE lesson_id = lessons.id) AS homework_count,
-                   0 AS grammar_count,
-                   0 AS exercises_count
+                   (SELECT COUNT(*) FROM lesson_grammar_items WHERE lesson_id = lessons.id) AS grammar_count,
+                   (SELECT COUNT(*) FROM lesson_exercise_items WHERE lesson_id = lessons.id) AS exercises_count
             FROM lesson_students
             JOIN lessons ON lessons.id = lesson_students.lesson_id
             WHERE lessons.id = ?
@@ -827,6 +862,125 @@ class Database:
         if row is None:
             raise RuntimeError("Failed to review homework answer")
         return row
+
+    def add_grammar_item(
+        self, lesson_id: int, title: str, explanation: str, example: str | None = None, position: int = 0
+    ) -> sqlite3.Row:
+        now = utc_now()
+        cursor = self.execute(
+            """
+            INSERT INTO lesson_grammar_items (lesson_id, position, title, explanation, example, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (lesson_id, position, title, explanation, example, now, now),
+        )
+        item = self.fetchone("SELECT * FROM lesson_grammar_items WHERE id = ?", (cursor.lastrowid,))
+        if item is None:
+            raise RuntimeError("Failed to create grammar item")
+        return item
+
+    def list_grammar_items(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM lesson_grammar_items WHERE lesson_id = ? ORDER BY position ASC, id ASC",
+            (lesson_id,),
+        )
+
+    def get_grammar_item(self, lesson_id: int, item_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM lesson_grammar_items WHERE id = ? AND lesson_id = ?",
+            (item_id, lesson_id),
+        )
+
+    def delete_grammar_item(self, lesson_id: int, item_id: int) -> bool:
+        cursor = self.execute(
+            "DELETE FROM lesson_grammar_items WHERE id = ? AND lesson_id = ?",
+            (item_id, lesson_id),
+        )
+        return cursor.rowcount > 0
+
+    def add_exercise_item(
+        self, lesson_id: int, prompt: str, expected_answer: str, hint: str | None = None, position: int = 0
+    ) -> sqlite3.Row:
+        now = utc_now()
+        cursor = self.execute(
+            """
+            INSERT INTO lesson_exercise_items (lesson_id, position, prompt, expected_answer, hint, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (lesson_id, position, prompt, expected_answer, hint, now, now),
+        )
+        item = self.fetchone("SELECT * FROM lesson_exercise_items WHERE id = ?", (cursor.lastrowid,))
+        if item is None:
+            raise RuntimeError("Failed to create exercise item")
+        return item
+
+    def list_exercise_items(self, lesson_id: int) -> list[sqlite3.Row]:
+        return self.fetchall(
+            "SELECT * FROM lesson_exercise_items WHERE lesson_id = ? ORDER BY position ASC, id ASC",
+            (lesson_id,),
+        )
+
+    def get_exercise_item(self, lesson_id: int, item_id: int) -> sqlite3.Row | None:
+        return self.fetchone(
+            "SELECT * FROM lesson_exercise_items WHERE id = ? AND lesson_id = ?",
+            (item_id, lesson_id),
+        )
+
+    def delete_exercise_item(self, lesson_id: int, item_id: int) -> bool:
+        if self.get_exercise_item(lesson_id, item_id) is None:
+            return False
+        self.execute("DELETE FROM lesson_exercise_answers WHERE exercise_id = ?", (item_id,))
+        cursor = self.execute(
+            "DELETE FROM lesson_exercise_items WHERE id = ? AND lesson_id = ?",
+            (item_id, lesson_id),
+        )
+        return cursor.rowcount > 0
+
+    def submit_exercise_answer(self, exercise_id: int, user_id: int, answer: str, is_correct: bool) -> sqlite3.Row:
+        cursor = self.execute(
+            """
+            INSERT INTO lesson_exercise_answers (exercise_id, user_id, answer, is_correct, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (exercise_id, user_id, answer, int(is_correct), utc_now()),
+        )
+        row = self.fetchone("SELECT * FROM lesson_exercise_answers WHERE id = ?", (cursor.lastrowid,))
+        if row is None:
+            raise RuntimeError("Failed to record exercise answer")
+        return row
+
+    def list_latest_exercise_answers(self, lesson_id: int, user_id: int) -> dict[int, sqlite3.Row]:
+        """Latest answer per exercise item for a student, keyed by exercise_id."""
+        rows = self.fetchall(
+            """
+            SELECT lesson_exercise_answers.*
+            FROM lesson_exercise_answers
+            JOIN lesson_exercise_items ON lesson_exercise_items.id = lesson_exercise_answers.exercise_id
+            WHERE lesson_exercise_items.lesson_id = ? AND lesson_exercise_answers.user_id = ?
+            ORDER BY lesson_exercise_answers.id ASC
+            """,
+            (lesson_id, user_id),
+        )
+        latest: dict[int, sqlite3.Row] = {}
+        for row in rows:
+            latest[int(row["exercise_id"])] = row
+        return latest
+
+    def set_student_lesson_section(self, lesson_id: int, student_username: str, section: str) -> None:
+        normalized = self.normalize_username(student_username)
+        if section == "FINISHED":
+            self.execute(
+                """
+                UPDATE lesson_students SET current_section = ?, completed_at = ?
+                WHERE lesson_id = ? AND student_username = ? AND is_active = 1
+                """,
+                (section, utc_now(), lesson_id, normalized),
+            )
+        else:
+            self.execute(
+                "UPDATE lesson_students SET current_section = ? WHERE lesson_id = ? AND student_username = ? AND is_active = 1",
+                (section, lesson_id, normalized),
+            )
 
     def add_word(self, owner_user_id: int, english: str, translation: str, topic: str | None, example: str | None) -> bool:
         english = english.strip()
