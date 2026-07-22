@@ -91,3 +91,21 @@ class PolzaAIProvider:
         except Exception:
             return None
         return response.choices[0].message.content if response.choices else None
+
+    async def generate_lesson_draft(self, *, system_prompt: str, user_prompt: str) -> str | None:
+        if not self.available:
+            return None
+
+        try:
+            response = await self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.7,
+            )
+        except Exception:
+            return None
+        return response.choices[0].message.content if response.choices else None

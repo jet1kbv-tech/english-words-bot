@@ -11,6 +11,7 @@ from app.config import load_settings
 from app.database import Database
 from app.handlers.menu import menu_message
 from app.handlers.teacher import TEACHER_LESSON_CALLBACK_PREFIXES, TEACHER_LESSONS_LIST_CALLBACK, handle_teacher_lesson_callback
+from app.handlers.teacher_ai_draft import TEACHER_AI_DRAFT_CALLBACK_PREFIXES, handle_teacher_ai_draft_callback
 from app.handlers.student_lessons import STUDENT_LESSON_CALLBACK_PREFIXES, handle_student_lesson_callback
 from app.handlers.start import start
 from app.handlers.training import daily_reminder
@@ -67,6 +68,8 @@ def build_application() -> Application:
     application.add_handler(CallbackQueryHandler(dictionary_menu, pattern=r"^dict_menu$"))
     lesson_pattern = "^(" + "|".join(TEACHER_LESSON_CALLBACK_PREFIXES) + r").+$|^" + TEACHER_LESSONS_LIST_CALLBACK + "$"
     application.add_handler(CallbackQueryHandler(handle_teacher_lesson_callback, pattern=lesson_pattern))
+    ai_draft_pattern = "^(" + "|".join(TEACHER_AI_DRAFT_CALLBACK_PREFIXES) + r").+$"
+    application.add_handler(CallbackQueryHandler(handle_teacher_ai_draft_callback, pattern=ai_draft_pattern))
     student_lesson_pattern = "^(" + "|".join(STUDENT_LESSON_CALLBACK_PREFIXES) + r").*$"
     application.add_handler(CallbackQueryHandler(handle_student_lesson_callback, pattern=student_lesson_pattern))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_message))
