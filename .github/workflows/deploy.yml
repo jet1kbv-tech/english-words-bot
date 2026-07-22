@@ -25,10 +25,12 @@ jobs:
           script: |
             set -e
             cd /opt/english-words-bot
+            . .venv/bin/activate
             git fetch origin main
+            git show origin/main:scripts/backup_database.py > /tmp/english-words-bot-backup-database.py
+            python /tmp/english-words-bot-backup-database.py
             git checkout main
             git reset --hard origin/main
-            . .venv/bin/activate
             pip install -r requirements.txt
             sudo systemctl restart english-words-bot
             sudo systemctl status english-words-bot --no-pager
