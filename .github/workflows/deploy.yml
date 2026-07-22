@@ -5,8 +5,15 @@ on:
     branches: [main]
 
 jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     steps:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.2.0

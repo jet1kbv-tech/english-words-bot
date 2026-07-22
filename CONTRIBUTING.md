@@ -53,6 +53,18 @@
 python -m compileall main.py app scripts
 python -m pytest
 
+## Merge requirements
+
+PR можно мержить только после зелёного CI (`.github/workflows/ci.yml`).
+
+Обязательные проверки:
+
+- `python -m compileall main.py app scripts`;
+- `python -m pytest`;
+- отсутствие неразрешённых merge-маркеров (`<<<<<<<`, `=======`, `>>>>>>>`) вне Markdown.
+
+После merge в `main` deploy (`.github/workflows/deploy.yml`) запускается автоматически, но только после повторного прохождения тех же проверок в этом workflow. Если проверки падают, deploy не выполняется и systemd-сервис на сервере не перезапускается.
+
 ## Conflict prevention
 
 Перед началом задачи работать от актуального main.

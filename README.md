@@ -152,7 +152,7 @@ journalctl -u english-words-bot -f
 
 ## Автодеплой на сервер через GitHub Actions
 
-При каждом push в `main` (в том числе после мержа PR) workflow `.github/workflows/deploy.yml` подключается на сервер по SSH и обновляет сервис. Ключ хранится только в GitHub Secrets, доступ к серверу вне GitHub Actions никому дополнительно выдавать не нужно.
+При каждом push в `main` (в том числе после мержа PR) workflow `.github/workflows/deploy.yml` сначала прогоняет job `test` (compileall, pytest, проверка на merge-маркеры — те же проверки, что и в `.github/workflows/ci.yml` для pull request), и только при их успехе выполняет job `deploy`, который подключается на сервер по SSH и обновляет сервис. Если проверки падают, деплой не запускается и сервис на сервере не перезапускается. Job `deploy` использует `concurrency`-группу, поэтому два быстрых push в `main` не деплоятся одновременно. Ключ хранится только в GitHub Secrets, доступ к серверу вне GitHub Actions никому дополнительно выдавать не нужно.
 
 Разовая настройка на сервере (от пользователя, под которым уже развёрнут бот, например `englishbot`):
 
