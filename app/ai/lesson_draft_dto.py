@@ -8,6 +8,8 @@ generator produces a `GeneratedLessonDraft` that lives only in memory
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID
 
 ALLOWED_LEVELS: tuple[str, ...] = ("A1", "A2", "B1", "B2", "C1")
 
@@ -88,12 +90,28 @@ class GeneratedExerciseDraft:
 
 
 @dataclass(frozen=True)
+class LessonDraftGenerationMetadata:
+    """Technical metadata about a successful generation, added by the app.
+
+    Never comes from the AI response and never part of its JSON contract —
+    only attached after the AI's JSON content has been parsed and validated.
+    """
+
+    generation_id: UUID
+    provider: str
+    model: str
+    prompt_version: int
+    generated_at: datetime
+
+
+@dataclass(frozen=True)
 class GeneratedLessonDraft:
     topic: str
     level: str
     words: tuple[GeneratedWordDraft, ...]
     grammar: tuple[GeneratedGrammarDraft, ...]
     exercises: tuple[GeneratedExerciseDraft, ...]
+    metadata: LessonDraftGenerationMetadata
 
 
 def validate_topic(raw_topic: str) -> str:

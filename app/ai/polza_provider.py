@@ -13,6 +13,8 @@ class AICheckResult:
 
 
 class PolzaAIProvider:
+    name = "polza"
+
     def __init__(self) -> None:
         self.api_key = os.getenv("POLZA_API_KEY", "").strip()
         self.base_url = os.getenv("POLZA_BASE_URL", "https://polza.ai/api/v1").strip()
@@ -104,7 +106,7 @@ class PolzaAIProvider:
                     {"role": "user", "content": user_prompt},
                 ],
                 response_format={"type": "json_object"},
-                temperature=0.7,
+                temperature=0.4,
             )
         except Exception:
             return None

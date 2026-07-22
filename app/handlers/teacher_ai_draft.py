@@ -34,14 +34,15 @@ from app.ai.lesson_draft_dto import (
     validate_topic,
 )
 from app.ai.lesson_draft_generator import generate_lesson_draft
-from app.database import Database, utc_now
+from app.database import Database
 from app.lesson_metadata import lesson_display_name
 from app.lesson_repository import LESSON_STATUS_DRAFT, LessonRepository
 from app.lesson_service import LessonService
 
 logger = logging.getLogger(__name__)
 
-_STATE_KEY = "teacher_ai_draft"
+_STATE_KEY = "ai_lesson_drafts"
+_ACTIVE_LESSON_KEY = "teacher_ai_draft_active_lesson_id"
 _TEACHER_ACTION_TOPIC = "teacher_ai_draft_topic"
 
 _NETWORK_ERROR_MESSAGE = "Не удалось получить ответ от AI-сервиса. Попробуйте ещё раз немного позже."
@@ -127,17 +128,20 @@ def _authorize(service: LessonService, lesson_id: int | None):
     return summary
 
 
+def _drafts(context: ContextTypes.DEFAULT_TYPE) -> dict[int, dict]:
+    return context.user_data.setdefault(_STATE_KEY, {})
+
+
 def _get_state(context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> dict | None:
-    state = context.user_data.get(_STATE_KEY)
-    if not isinstance(state, dict) or state.get("lesson_id") != lesson_id:
-        return None
-    return state
+    return _drafts(context).get(lesson_id)
 
 
-def _clear_state(context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.pop(_STATE_KEY, None)
-    if context.user_data.get("teacher_action") == _TEACHER_ACTION_TOPIC:
-        context.user_data.pop("teacher_action", None)
+def _clear_state(context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> None:
+    _drafts(context).pop(lesson_id, None)
+    if context.user_data.get(_ACTIVE_LESSON_KEY) == lesson_id:
+        context.user_data.pop(_ACTIVE_LESSON_KEY, None)
+        if context.user_data.get("teacher_action") == _TEACHER_ACTION_TOPIC:
+            context.user_data.pop("teacher_action", None)
 
 
 def _entry_screen(lesson_id: int, summary) -> tuple[str, InlineKeyboardMarkup]:
@@ -368,8 +372,7 @@ def _preview_section_screen(lesson_id: int, draft: GeneratedLessonDraft, section
 
 
 async def _begin_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> None:
-    context.user_data[_STATE_KEY] = {
-        "lesson_id": lesson_id,
+    _drafts(context)[lesson_id] = {
         "topic": None,
         "level": None,
         "words_count": None,
@@ -378,8 +381,8 @@ async def _begin_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE, less
         "in_progress": False,
         "draft": None,
         "request": None,
-        "generated_at": None,
     }
+    context.user_data[_ACTIVE_LESSON_KEY] = lesson_id
     context.user_data["teacher_action"] = _TEACHER_ACTION_TOPIC
     query = update.callback_query
     if query is not None:
@@ -428,7 +431,6 @@ async def _run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE, le
 
         state["draft"] = draft
         state["request"] = request
-        state["generated_at"] = utc_now()
         if query is not None:
             text, markup = _ready_screen(lesson_id, draft)
             await query.edit_message_text(text, reply_markup=markup)
@@ -442,20 +444,25 @@ async def handle_teacher_ai_draft_message(update: Update, context: ContextTypes.
 
     from app.handlers.teacher import is_teacher
 
+    lesson_id = context.user_data.get(_ACTIVE_LESSON_KEY)
+
     if not is_teacher(update, context) or update.effective_message is None:
-        _clear_state(context)
+        if lesson_id is not None:
+            _clear_state(context, lesson_id)
+        else:
+            context.user_data.pop("teacher_action", None)
         return False
 
-    state = context.user_data.get(_STATE_KEY)
-    if not isinstance(state, dict):
+    state = _get_state(context, lesson_id) if lesson_id is not None else None
+    if state is None:
+        context.user_data.pop(_ACTIVE_LESSON_KEY, None)
         context.user_data.pop("teacher_action", None)
         return False
 
-    lesson_id = state["lesson_id"]
     db: Database = context.application.bot_data["db"]
     summary = _authorize(_lesson_service(db), lesson_id)
     if summary is None:
-        _clear_state(context)
+        _clear_state(context, lesson_id)
         await update.effective_message.reply_text(_DRAFT_LOST_MESSAGE)
         return True
 
@@ -607,7 +614,7 @@ async def handle_teacher_ai_draft_callback(update: Update, context: ContextTypes
         lesson_id = _parse_lesson_id(data, TEACHER_AI_DRAFT_CANCEL_PREFIX)
         if lesson_id is None:
             return
-        _clear_state(context)
+        _clear_state(context, lesson_id)
         summary = service.get_lesson_summary(lesson_id)
         if summary is None:
             await query.edit_message_text("Урок не найден.")

@@ -1,5 +1,7 @@
 import json
 import unittest
+import uuid
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from app.ai.lesson_draft_dto import (
@@ -11,6 +13,7 @@ from app.ai.lesson_draft_dto import (
     build_generation_request,
 )
 from app.ai.lesson_draft_generator import generate_lesson_draft
+from app.ai.lesson_draft_prompt import LESSON_DRAFT_PROMPT_VERSION
 
 
 def _words(n: int) -> list[dict]:
@@ -50,10 +53,13 @@ def _payload(words_count: int, grammar_count: int, exercises_count: int) -> dict
 
 
 class FakeProvider:
-    def __init__(self, content=None, *, raise_exc=None, available=True):
+    name = "polza"
+
+    def __init__(self, content=None, *, raise_exc=None, available=True, model="fake-model"):
         self._content = content
         self._raise_exc = raise_exc
         self.available = available
+        self.model = model
         self.calls = []
 
     async def generate_lesson_draft(self, *, system_prompt, user_prompt):
@@ -251,6 +257,63 @@ class GenerateLessonDraftTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider(json.dumps(payload))):
             with self.assertRaises(DraftResponseValidationError):
                 await generate_lesson_draft(_request())
+
+
+class MetadataTests(unittest.IsolatedAsyncioTestCase):
+    async def test_successful_generation_creates_metadata(self) -> None:
+        content = json.dumps(_payload(5, 1, 3))
+        with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider(content, model="deepseek/deepseek-v4-flash")):
+            draft = await generate_lesson_draft(_request())
+        self.assertIsInstance(draft.metadata.generation_id, uuid.UUID)
+        self.assertEqual(draft.metadata.provider, "polza")
+        self.assertEqual(draft.metadata.model, "deepseek/deepseek-v4-flash")
+        self.assertEqual(draft.metadata.prompt_version, LESSON_DRAFT_PROMPT_VERSION)
+
+    async def test_generated_at_is_timezone_aware_utc(self) -> None:
+        content = json.dumps(_payload(5, 1, 3))
+        with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider(content)):
+            draft = await generate_lesson_draft(_request())
+        generated_at = draft.metadata.generated_at
+        self.assertIsInstance(generated_at, datetime)
+        self.assertIsNotNone(generated_at.tzinfo)
+        self.assertEqual(generated_at.utcoffset(), timezone.utc.utcoffset(None))
+
+    async def test_generated_at_uses_injected_clock(self) -> None:
+        fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        content = json.dumps(_payload(5, 1, 3))
+        with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider(content)):
+            draft = await generate_lesson_draft(_request(), clock=lambda: fixed)
+        self.assertEqual(draft.metadata.generated_at, fixed)
+
+    async def test_two_successful_generations_create_different_generation_ids(self) -> None:
+        content = json.dumps(_payload(5, 1, 3))
+        with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider(content)):
+            first = await generate_lesson_draft(_request())
+            second = await generate_lesson_draft(_request())
+        self.assertNotEqual(first.metadata.generation_id, second.metadata.generation_id)
+
+    async def test_failed_generation_does_not_reach_metadata_creation(self) -> None:
+        with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider("not json{")):
+            with self.assertRaises(DraftResponseParseError):
+                await generate_lesson_draft(_request())
+
+    async def test_metadata_keys_are_not_accepted_from_ai_response(self) -> None:
+        payload = _payload(5, 1, 3)
+        payload["generation_id"] = str(uuid.uuid4())
+        payload["provider"] = "polza"
+        payload["model"] = "deepseek/deepseek-v4-flash"
+        payload["prompt_version"] = 1
+        payload["generated_at"] = "2026-01-01T00:00:00+00:00"
+        with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider(json.dumps(payload))):
+            with self.assertRaises(DraftResponseValidationError):
+                await generate_lesson_draft(_request())
+
+    async def test_metadata_not_required_in_ai_json_shape(self) -> None:
+        # The AI contract has exactly topic/level/words/grammar/exercises — no metadata keys.
+        payload = _payload(5, 1, 3)
+        with patch("app.ai.lesson_draft_generator.PolzaAIProvider", return_value=FakeProvider(json.dumps(payload))):
+            draft = await generate_lesson_draft(_request())
+        self.assertTrue(hasattr(draft, "metadata"))
 
 
 if __name__ == "__main__":

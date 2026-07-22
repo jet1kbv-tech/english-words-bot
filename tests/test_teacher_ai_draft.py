@@ -1,5 +1,7 @@
 import unittest
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ from app.ai.lesson_draft_dto import (
     GeneratedGrammarDraft,
     GeneratedLessonDraft,
     GeneratedWordDraft,
+    LessonDraftGenerationMetadata,
 )
 from app.database import Database
 from app.handlers import teacher_ai_draft as ai_draft_module
@@ -43,6 +46,16 @@ class RoleSettings:
     teacher_usernames: frozenset = frozenset({"romateaches"})
 
 
+def _sample_metadata() -> LessonDraftGenerationMetadata:
+    return LessonDraftGenerationMetadata(
+        generation_id=uuid.uuid4(),
+        provider="polza",
+        model="deepseek/deepseek-v4-flash",
+        prompt_version=1,
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
 def _sample_draft(words=2, grammar=1, exercises=1) -> GeneratedLessonDraft:
     return GeneratedLessonDraft(
         topic="Present Simple: daily routines",
@@ -64,6 +77,7 @@ def _sample_draft(words=2, grammar=1, exercises=1) -> GeneratedLessonDraft:
             )
             for i in range(exercises)
         ),
+        metadata=_sample_metadata(),
     )
 
 
@@ -146,6 +160,21 @@ class TeacherAIDraftTestCase(unittest.IsolatedAsyncioTestCase):
         await handle_teacher_ai_draft_callback(exercises_update, self.context)
         return exercises_update
 
+    async def _generate_draft(self, draft):
+        lesson_id = self.lesson["id"]
+        await self._advance_through_wizard()
+
+        async def fake_generate(request):
+            return draft
+
+        original = ai_draft_module.generate_lesson_draft
+        ai_draft_module.generate_lesson_draft = fake_generate
+        try:
+            generate_update = self._callback_update(f"{TEACHER_AI_DRAFT_CONFIRM_GENERATE_PREFIX}{lesson_id}")
+            await handle_teacher_ai_draft_callback(generate_update, self.context)
+        finally:
+            ai_draft_module.generate_lesson_draft = original
+
 
 class EntryScreenTests(TeacherAIDraftTestCase):
     async def test_entry_screen_shown_for_draft_lesson(self) -> None:
@@ -189,7 +218,7 @@ class WizardFlowTests(TeacherAIDraftTestCase):
 
         forged = self._callback_update(f"{TEACHER_AI_DRAFT_LEVEL_PREFIX}{lesson_id}:C9")
         await handle_teacher_ai_draft_callback(forged, self.context)
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         self.assertIsNone(state["level"])
 
     async def test_forged_words_count_is_rejected(self) -> None:
@@ -201,7 +230,7 @@ class WizardFlowTests(TeacherAIDraftTestCase):
 
         forged = self._callback_update(f"{ai_draft_module.TEACHER_AI_DRAFT_WORDS_PREFIX}{lesson_id}:999")
         await handle_teacher_ai_draft_callback(forged, self.context)
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         self.assertIsNone(state["words_count"])
 
     async def test_edit_button_resets_wizard(self) -> None:
@@ -210,7 +239,7 @@ class WizardFlowTests(TeacherAIDraftTestCase):
         edit_update = self._callback_update(f"{TEACHER_AI_DRAFT_EDIT_PREFIX}{lesson_id}")
         await handle_teacher_ai_draft_callback(edit_update, self.context)
         self.assertIn("Введите тему урока", edit_update.callback_query.edits[-1][0])
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         self.assertIsNone(state["topic"])
         self.assertIsNone(state["level"])
 
@@ -219,8 +248,9 @@ class WizardFlowTests(TeacherAIDraftTestCase):
         lesson_id = self.lesson["id"]
         cancel_update = self._callback_update(f"{TEACHER_AI_DRAFT_CANCEL_PREFIX}{lesson_id}")
         await handle_teacher_ai_draft_callback(cancel_update, self.context)
-        self.assertNotIn(ai_draft_module._STATE_KEY, self.context.user_data)
+        self.assertNotIn(lesson_id, self.context.user_data.get(ai_draft_module._STATE_KEY, {}))
         self.assertNotIn("teacher_action", self.context.user_data)
+        self.assertNotIn(ai_draft_module._ACTIVE_LESSON_KEY, self.context.user_data)
 
     async def test_existing_content_warning_shown_and_continue_proceeds(self) -> None:
         lesson_id = self.lesson["id"]
@@ -255,7 +285,7 @@ class GenerationTests(TeacherAIDraftTestCase):
 
         text = generate_update.callback_query.edits[-1][0]
         self.assertIn("✨ Черновик готов", text)
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         self.assertIs(state["draft"], draft)
         self.assertFalse(state["in_progress"])
 
@@ -282,7 +312,7 @@ class GenerationTests(TeacherAIDraftTestCase):
         text = generate_update.callback_query.edits[-1][0]
         self.assertEqual(text, "Не удалось получить ответ от AI-сервиса. Попробуйте ещё раз немного позже.")
         self.assertNotIn("secret-token-xyz", text)
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         self.assertFalse(state["in_progress"])
 
     async def test_invalid_draft_shows_safe_message(self) -> None:
@@ -306,7 +336,7 @@ class GenerationTests(TeacherAIDraftTestCase):
     async def test_double_click_guard_blocks_concurrent_generation(self) -> None:
         lesson_id = self.lesson["id"]
         await self._advance_through_wizard()
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         state["in_progress"] = True
 
         calls = []
@@ -360,6 +390,42 @@ class GenerationTests(TeacherAIDraftTestCase):
         self.assertEqual(seen_requests[0].topic, "Present Simple: daily routines")
         self.assertIn("✨ Черновик готов", retry_update.callback_query.edits[-1][0])
 
+    async def test_successful_regenerate_replaces_draft_with_new_generation_id(self) -> None:
+        lesson_id = self.lesson["id"]
+        await self._advance_through_wizard()
+
+        first_draft = _sample_draft()
+
+        async def generate_first(request):
+            return first_draft
+
+        original = ai_draft_module.generate_lesson_draft
+        ai_draft_module.generate_lesson_draft = generate_first
+        try:
+            generate_update = self._callback_update(f"{TEACHER_AI_DRAFT_CONFIRM_GENERATE_PREFIX}{lesson_id}")
+            await handle_teacher_ai_draft_callback(generate_update, self.context)
+        finally:
+            ai_draft_module.generate_lesson_draft = original
+
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
+        self.assertIs(state["draft"], first_draft)
+
+        second_draft = _sample_draft()
+
+        async def generate_second(request):
+            return second_draft
+
+        ai_draft_module.generate_lesson_draft = generate_second
+        try:
+            regenerate_update = self._callback_update(f"{TEACHER_AI_DRAFT_REGENERATE_PREFIX}{lesson_id}")
+            await handle_teacher_ai_draft_callback(regenerate_update, self.context)
+        finally:
+            ai_draft_module.generate_lesson_draft = original
+
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
+        self.assertIs(state["draft"], second_draft)
+        self.assertNotEqual(state["draft"].metadata.generation_id, first_draft.metadata.generation_id)
+
     async def test_failed_regenerate_keeps_previous_draft(self) -> None:
         lesson_id = self.lesson["id"]
         await self._advance_through_wizard()
@@ -377,8 +443,9 @@ class GenerationTests(TeacherAIDraftTestCase):
         finally:
             ai_draft_module.generate_lesson_draft = original
 
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         self.assertIs(state["draft"], good_draft)
+        original_generation_id = good_draft.metadata.generation_id
 
         async def fail(request):
             raise DraftGenerationError("boom")
@@ -390,8 +457,9 @@ class GenerationTests(TeacherAIDraftTestCase):
         finally:
             ai_draft_module.generate_lesson_draft = original
 
-        state = self.context.user_data[ai_draft_module._STATE_KEY]
+        state = self.context.user_data[ai_draft_module._STATE_KEY][lesson_id]
         self.assertIs(state["draft"], good_draft)
+        self.assertEqual(state["draft"].metadata.generation_id, original_generation_id)
         text = regenerate_update.callback_query.edits[-1][0]
         self.assertEqual(text, "Не удалось получить ответ от AI-сервиса. Попробуйте ещё раз немного позже.")
 
@@ -401,20 +469,6 @@ class GenerationTests(TeacherAIDraftTestCase):
 
 
 class PreviewTests(TeacherAIDraftTestCase):
-    async def _generate_draft(self, draft):
-        lesson_id = self.lesson["id"]
-        await self._advance_through_wizard()
-
-        async def fake_generate(request):
-            return draft
-
-        original = ai_draft_module.generate_lesson_draft
-        ai_draft_module.generate_lesson_draft = fake_generate
-        try:
-            generate_update = self._callback_update(f"{TEACHER_AI_DRAFT_CONFIRM_GENERATE_PREFIX}{lesson_id}")
-            await handle_teacher_ai_draft_callback(generate_update, self.context)
-        finally:
-            ai_draft_module.generate_lesson_draft = original
 
     async def test_preview_menu_and_word_pagination(self) -> None:
         lesson_id = self.lesson["id"]
@@ -460,7 +514,7 @@ class PreviewTests(TeacherAIDraftTestCase):
         draft = _sample_draft()
         await self._generate_draft(draft)
 
-        self.context.user_data.pop(ai_draft_module._STATE_KEY, None)
+        self.context.user_data[ai_draft_module._STATE_KEY].pop(lesson_id, None)
 
         open_preview = self._callback_update(f"{TEACHER_AI_DRAFT_PREVIEW_OPEN_PREFIX}{lesson_id}")
         await handle_teacher_ai_draft_callback(open_preview, self.context)
@@ -474,6 +528,59 @@ class PreviewTests(TeacherAIDraftTestCase):
         mismatched = self._callback_update(f"{TEACHER_AI_DRAFT_PREVIEW_OPEN_PREFIX}{other_lesson['id']}")
         await handle_teacher_ai_draft_callback(mismatched, self.context)
         self.assertIn("Черновик больше недоступен", mismatched.callback_query.edits[-1][0])
+
+
+class LessonScopedStorageTests(TeacherAIDraftTestCase):
+    async def test_second_lesson_wizard_does_not_erase_first_lessons_draft(self) -> None:
+        lesson_a_id = self.lesson["id"]
+        draft_a = _sample_draft()
+        await self._generate_draft(draft_a)
+
+        lesson_b = self.db.create_teacher_lesson("Lesson 2 — Travel", self.teacher["id"])
+        start_b = self._callback_update(f"{TEACHER_AI_DRAFT_START_PREFIX}{lesson_b['id']}")
+        await handle_teacher_ai_draft_callback(start_b, self.context)
+        await handle_teacher_ai_draft_message(self._text_update("Travel vocabulary"), self.context)
+
+        drafts = self.context.user_data[ai_draft_module._STATE_KEY]
+        self.assertIs(drafts[lesson_a_id]["draft"], draft_a)
+        self.assertIsNone(drafts[lesson_b["id"]]["draft"])
+        self.assertEqual(drafts[lesson_b["id"]]["topic"], "Travel vocabulary")
+
+        preview_a = self._callback_update(f"{TEACHER_AI_DRAFT_PREVIEW_OPEN_PREFIX}{lesson_a_id}")
+        await handle_teacher_ai_draft_callback(preview_a, self.context)
+        self.assertIn("Выберите раздел", preview_a.callback_query.edits[-1][0])
+
+    async def test_cancel_for_one_lesson_does_not_clear_other_lessons_draft(self) -> None:
+        lesson_a_id = self.lesson["id"]
+        draft_a = _sample_draft()
+        await self._generate_draft(draft_a)
+
+        lesson_b = self.db.create_teacher_lesson("Lesson 2 — Travel", self.teacher["id"])
+        draft_b = _sample_draft()
+
+        async def fake_generate(request):
+            return draft_b
+
+        original = ai_draft_module.generate_lesson_draft
+        ai_draft_module.generate_lesson_draft = fake_generate
+        try:
+            start_b = self._callback_update(f"{TEACHER_AI_DRAFT_START_PREFIX}{lesson_b['id']}")
+            await handle_teacher_ai_draft_callback(start_b, self.context)
+            await handle_teacher_ai_draft_message(self._text_update("Travel vocabulary"), self.context)
+            await handle_teacher_ai_draft_callback(self._callback_update(f"{TEACHER_AI_DRAFT_LEVEL_PREFIX}{lesson_b['id']}:A2"), self.context)
+            await handle_teacher_ai_draft_callback(self._callback_update(f"{TEACHER_AI_DRAFT_WORDS_PREFIX}{lesson_b['id']}:5"), self.context)
+            await handle_teacher_ai_draft_callback(self._callback_update(f"{TEACHER_AI_DRAFT_GRAMMAR_PREFIX}{lesson_b['id']}:1"), self.context)
+            await handle_teacher_ai_draft_callback(self._callback_update(f"{TEACHER_AI_DRAFT_EXERCISES_PREFIX}{lesson_b['id']}:3"), self.context)
+            await handle_teacher_ai_draft_callback(self._callback_update(f"{TEACHER_AI_DRAFT_CONFIRM_GENERATE_PREFIX}{lesson_b['id']}"), self.context)
+        finally:
+            ai_draft_module.generate_lesson_draft = original
+
+        cancel_b = self._callback_update(f"{TEACHER_AI_DRAFT_CANCEL_PREFIX}{lesson_b['id']}")
+        await handle_teacher_ai_draft_callback(cancel_b, self.context)
+
+        drafts = self.context.user_data[ai_draft_module._STATE_KEY]
+        self.assertNotIn(lesson_b["id"], drafts)
+        self.assertIs(drafts[lesson_a_id]["draft"], draft_a)
 
 
 if __name__ == "__main__":
