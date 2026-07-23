@@ -74,6 +74,27 @@ class LessonRepository:
     def add_lesson_words(self, lesson_id: int, words: list[str], owner_user_id: int | None = None) -> list[sqlite3.Row]:
         return self.db.add_lesson_words(lesson_id, words, owner_user_id)
 
+    def save_generated_draft(
+        self,
+        lesson_id: int,
+        *,
+        generation_id: str,
+        owner_user_id: int | None,
+        words: list[tuple[str, str, str | None]],
+        grammar: list[tuple[str, str, str | None]],
+        exercises: list[tuple[str, str, int, str | None]],
+        required_teacher_user_id: int | None = None,
+    ) -> str:
+        return self.db.save_generated_draft(
+            lesson_id,
+            generation_id=generation_id,
+            owner_user_id=owner_user_id,
+            words=words,
+            grammar=grammar,
+            exercises=exercises,
+            required_teacher_user_id=required_teacher_user_id,
+        )
+
     def assign_lesson_to_student(self, lesson_id: int, student_username: str, assigned_by_user_id: int | None = None) -> sqlite3.Row:
         return self.db.assign_lesson_to_student(lesson_id, student_username, assigned_by_user_id)
 

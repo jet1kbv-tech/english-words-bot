@@ -2,11 +2,15 @@
 
 This module implements the teacher-facing wizard that collects generation
 parameters (topic, level, counts), calls the AI generator service, and
-lets the teacher preview and regenerate the resulting draft. The draft
-never touches SQLite and never changes existing lesson content — it lives
-only in `context.user_data` for the duration of the Telegram session.
-Saving/merging the draft into a real lesson is explicitly out of scope
-for this PR and is left to a future one.
+lets the teacher preview, regenerate, and save the resulting draft. Until
+saved, the draft lives only in `context.user_data` for the duration of the
+Telegram session and never changes existing lesson content. Saving writes
+into the same lesson tables the Lesson Runtime already reads (via
+`LessonService`/`LessonRepository`), through one dedicated atomic
+operation (`save_generated_draft`) rather than the manual per-item
+add methods — see `LessonService.save_generated_draft` for the transaction
+boundary. Editing an already-generated draft and merging into an
+already-non-empty section remain out of scope.
 """
 
 from __future__ import annotations
@@ -34,10 +38,11 @@ from app.ai.lesson_draft_dto import (
     validate_topic,
 )
 from app.ai.lesson_draft_generator import generate_lesson_draft
+from app.auth.roles import Role, RoleResolver
 from app.database import Database
 from app.lesson_metadata import lesson_display_name
 from app.lesson_repository import LESSON_STATUS_DRAFT, LessonRepository
-from app.lesson_service import LessonService
+from app.lesson_service import DraftAlreadySavedError, DraftSaveConflictError, DraftSaveForbiddenError, LessonService
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +53,8 @@ _TEACHER_ACTION_TOPIC = "teacher_ai_draft_topic"
 _NETWORK_ERROR_MESSAGE = "Не удалось получить ответ от AI-сервиса. Попробуйте ещё раз немного позже."
 _INVALID_DRAFT_MESSAGE = "AI вернул некорректный черновик. Можно попробовать сгенерировать его ещё раз."
 _DRAFT_LOST_MESSAGE = "Черновик больше недоступен. Сгенерируйте его заново."
+_DRAFT_NOT_FOUND_FOR_SAVE_MESSAGE = "Черновик не найден или устарел. Сгенерируйте его заново."
+_SAVE_ERROR_MESSAGE = "Не удалось сохранить черновик из-за внутренней ошибки. Попробуйте ещё раз немного позже."
 
 TEACHER_AI_DRAFT_START_PREFIX = "teacher:ai_draft:start:"
 TEACHER_AI_DRAFT_WARNING_CONTINUE_PREFIX = "teacher:ai_draft:warn_continue:"
@@ -62,6 +69,7 @@ TEACHER_AI_DRAFT_REGENERATE_PREFIX = "teacher:ai_draft:regenerate:"
 TEACHER_AI_DRAFT_READY_PREFIX = "teacher:ai_draft:ready:"
 TEACHER_AI_DRAFT_PREVIEW_OPEN_PREFIX = "teacher:ai_draft:preview:"
 TEACHER_AI_DRAFT_PREVIEW_SECTION_PREFIX = "teacher:ai_draft:preview_section:"
+TEACHER_AI_DRAFT_SAVE_PREFIX = "teacher:ai_draft:save:"
 
 TEACHER_AI_DRAFT_CALLBACK_PREFIXES = (
     TEACHER_AI_DRAFT_START_PREFIX,
@@ -77,6 +85,7 @@ TEACHER_AI_DRAFT_CALLBACK_PREFIXES = (
     TEACHER_AI_DRAFT_READY_PREFIX,
     TEACHER_AI_DRAFT_PREVIEW_OPEN_PREFIX,
     TEACHER_AI_DRAFT_PREVIEW_SECTION_PREFIX,
+    TEACHER_AI_DRAFT_SAVE_PREFIX,
 )
 
 _WORDS_PER_PAGE = 5
@@ -90,6 +99,16 @@ _SECTION_LABELS = {
 
 def _lesson_service(db: Database) -> LessonService:
     return LessonService(LessonRepository(db))
+
+
+def _is_admin_acting_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    if user is None:
+        return False
+    settings = context.application.bot_data["settings"]
+    db = context.application.bot_data.get("db")
+    role = RoleResolver(settings, db).role_for(user.username)
+    return role is Role.ADMIN
 
 
 def _back_to_lesson_button(lesson_id: int) -> InlineKeyboardButton:
@@ -275,9 +294,22 @@ def _ready_screen(lesson_id: int, draft: GeneratedLessonDraft) -> tuple[str, Inl
     ])
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("👀 Посмотреть", callback_data=f"{TEACHER_AI_DRAFT_PREVIEW_OPEN_PREFIX}{lesson_id}")],
+        [InlineKeyboardButton("✅ Сохранить в урок", callback_data=f"{TEACHER_AI_DRAFT_SAVE_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("🔄 Сгенерировать заново", callback_data=f"{TEACHER_AI_DRAFT_REGENERATE_PREFIX}{lesson_id}")],
         [_cancel_button(lesson_id)],
     ])
+    return text, markup
+
+
+def _save_success_screen(lesson_id: int, summary) -> tuple[str, InlineKeyboardMarkup]:
+    text = "\n".join([
+        "✅ Материалы сохранены в урок",
+        "",
+        f"📚 Слова: {int(summary['words_count'] or 0)}",
+        f"📘 Грамматика: {int(summary['grammar_count'] or 0)}",
+        f"📝 Упражнения: {int(summary['exercises_count'] or 0)}",
+    ])
+    markup = InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]])
     return text, markup
 
 
@@ -436,6 +468,86 @@ async def _run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE, le
             await query.edit_message_text(text, reply_markup=markup)
     finally:
         state["in_progress"] = False
+
+
+async def _save_draft_to_lesson(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int, state: dict, summary) -> None:
+    query = update.callback_query
+    draft: GeneratedLessonDraft | None = state.get("draft")
+    if draft is None:
+        if query is not None:
+            await query.edit_message_text(
+                _DRAFT_NOT_FOUND_FOR_SAVE_MESSAGE,
+                reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]),
+            )
+        return
+
+    from app.handlers.teacher import _teacher_user_id
+
+    db: Database = context.application.bot_data["db"]
+    service = _lesson_service(db)
+    owner_user_id = _teacher_user_id(update, db)
+    is_admin = _is_admin_acting_user(update, context)
+    required_teacher_user_id = None if is_admin else owner_user_id
+
+    if not is_admin and (owner_user_id is None or summary["teacher_user_id"] != owner_user_id):
+        logger.info("Lesson draft save forbidden: acting user does not own lesson (lesson_id=%s)", lesson_id)
+        if query is not None:
+            await query.edit_message_text(
+                "У вас нет прав на изменение этого урока.",
+                reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]),
+            )
+        return
+
+    words = [(word.source, word.translation, word.example) for word in draft.words]
+    grammar = [(item.title, item.explanation, item.example) for item in draft.grammar]
+    exercises = [(item.prompt, list(item.options), item.correct_option_index, item.explanation) for item in draft.exercises]
+    generation_id = str(draft.metadata.generation_id)
+
+    try:
+        saved_summary = service.save_generated_draft(
+            lesson_id,
+            generation_id=generation_id,
+            owner_user_id=owner_user_id,
+            words=words,
+            grammar=grammar,
+            exercises=exercises,
+            required_teacher_user_id=required_teacher_user_id,
+        )
+    except DraftAlreadySavedError:
+        logger.info("Lesson draft already saved (lesson_id=%s, generation_id=%s)", lesson_id, generation_id)
+        _drafts(context).pop(lesson_id, None)
+        if query is not None:
+            await query.edit_message_text(
+                "Этот черновик уже был сохранён в урок.",
+                reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]),
+            )
+        return
+    except DraftSaveConflictError as exc:
+        logger.info("Lesson draft save conflict (lesson_id=%s, generation_id=%s)", lesson_id, generation_id)
+        if query is not None:
+            await query.edit_message_text(str(exc), reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
+        return
+    except DraftSaveForbiddenError as exc:
+        logger.info("Lesson draft save forbidden by service (lesson_id=%s, generation_id=%s)", lesson_id, generation_id)
+        if query is not None:
+            await query.edit_message_text(str(exc), reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
+        return
+    except Exception:
+        logger.exception("Lesson draft save failed (lesson_id=%s, generation_id=%s)", lesson_id, generation_id)
+        if query is not None:
+            await query.edit_message_text(_SAVE_ERROR_MESSAGE, reply_markup=InlineKeyboardMarkup([[_cancel_button(lesson_id)]]))
+        return
+
+    logger.info(
+        "Lesson draft saved (lesson_id=%s, generation_id=%s, teacher_user_id=%s, words=%d, grammar=%d, exercises=%d)",
+        lesson_id, generation_id, owner_user_id, len(draft.words), len(draft.grammar), len(draft.exercises),
+    )
+    _drafts(context).pop(lesson_id, None)
+    if context.user_data.get(_ACTIVE_LESSON_KEY) == lesson_id:
+        context.user_data.pop(_ACTIVE_LESSON_KEY, None)
+    if query is not None:
+        text, markup = _save_success_screen(lesson_id, saved_summary)
+        await query.edit_message_text(text, reply_markup=markup)
 
 
 async def handle_teacher_ai_draft_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -684,4 +796,17 @@ async def handle_teacher_ai_draft_callback(update: Update, context: ContextTypes
             return
         text, markup = result
         await query.edit_message_text(text, reply_markup=markup)
+        return
+
+    if data.startswith(TEACHER_AI_DRAFT_SAVE_PREFIX):
+        lesson_id = _parse_lesson_id(data, TEACHER_AI_DRAFT_SAVE_PREFIX)
+        summary = _authorize(service, lesson_id)
+        state = _get_state(context, lesson_id) if lesson_id is not None else None
+        if summary is None or state is None:
+            await query.edit_message_text(
+                _DRAFT_NOT_FOUND_FOR_SAVE_MESSAGE,
+                reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id or 0)]]),
+            )
+            return
+        await _save_draft_to_lesson(update, context, lesson_id, state, summary)
         return
