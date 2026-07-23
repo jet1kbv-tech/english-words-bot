@@ -47,7 +47,11 @@ class DraftSaveConflictError(ValueError):
 
 
 class DraftAlreadySavedError(ValueError):
-    """Raised when this exact generation_id has already been saved into the lesson."""
+    """Raised when this exact generation_id has already been saved (to any lesson, ever)."""
+
+
+class DraftSaveForbiddenError(ValueError):
+    """Raised when the acting teacher does not own the target lesson."""
 
 
 def _validated_prompt(prompt: str, *, empty_message: str, max_length: int = MAX_HOMEWORK_PROMPT_LENGTH) -> str:
@@ -118,6 +122,7 @@ class LessonService:
         words: list[tuple[str, str, str | None]],
         grammar: list[tuple[str, str, str | None]],
         exercises: list[tuple[str, list[str], int, str | None]],
+        required_teacher_user_id: int | None = None,
     ) -> sqlite3.Row:
         """Atomically saves an AI-generated draft's words/grammar/exercises into a lesson.
 
@@ -125,11 +130,20 @@ class LessonService:
         `exercises` are (prompt, options, correct_option_index, explanation)
         tuples; this method serializes `options` to JSON itself, matching
         `add_exercise_item`'s options_json shape, so the caller never needs to
-        know about that storage detail. Raises `DraftAlreadySavedError` if this
-        generation_id was already saved (no-op, not an error the caller needs
-        to treat as failure), `DraftSaveConflictError` if a targeted section
-        already has content, or `ValueError` for a missing lesson/owner or an
-        invalid exercise shape. Returns the fresh lesson summary on success.
+        know about that storage detail.
+
+        `required_teacher_user_id`, when given, restricts the save to a
+        lesson owned by that exact teacher; pass `None` to allow saving into
+        any lesson (e.g. for an admin). This method has no notion of
+        Telegram roles - the caller decides which applies.
+
+        Raises `DraftAlreadySavedError` if this generation_id was already
+        saved (no-op, not an error the caller needs to treat as failure),
+        `DraftSaveConflictError` if a targeted section already has content,
+        `DraftSaveForbiddenError` if `required_teacher_user_id` does not own
+        the lesson, or `ValueError` for a missing lesson/owner, a lesson
+        that isn't in DRAFT status, or an invalid exercise shape. Returns the
+        fresh lesson summary on success.
         """
         generation_id = generation_id.strip()
         if not generation_id:
@@ -153,6 +167,7 @@ class LessonService:
             words=words,
             grammar=grammar,
             exercises=cleaned_exercises,
+            required_teacher_user_id=required_teacher_user_id,
         )
         if outcome == "already_saved":
             raise DraftAlreadySavedError("Этот черновик уже был сохранён в урок.")
@@ -161,6 +176,10 @@ class LessonService:
                 "Не удалось сохранить черновик: один или несколько разделов урока уже содержат материалы. "
                 "Чтобы не потерять ручные изменения, автоматическое объединение пока недоступно."
             )
+        if outcome == "forbidden":
+            raise DraftSaveForbiddenError("У вас нет прав на изменение этого урока.")
+        if outcome == "not_draft":
+            raise ValueError("lesson is not in DRAFT status")
         summary = self.repository.get_lesson_summary(lesson_id)
         if summary is None:
             raise ValueError("lesson not found")

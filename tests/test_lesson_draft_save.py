@@ -30,7 +30,13 @@ from app.handlers.teacher_ai_draft import (
 )
 from app.lesson_repository import LessonRepository
 from app.lesson_runtime import LessonRuntimeService, LessonSection
-from app.lesson_service import DraftAlreadySavedError, DraftSaveConflictError, ExerciseItemError, LessonService
+from app.lesson_service import (
+    DraftAlreadySavedError,
+    DraftSaveConflictError,
+    DraftSaveForbiddenError,
+    ExerciseItemError,
+    LessonService,
+)
 
 
 def _sample_metadata(generation_id: uuid.UUID | None = None) -> LessonDraftGenerationMetadata:
@@ -236,6 +242,87 @@ class SaveGeneratedDraftDatabaseTests(unittest.TestCase):
                 words=[("a", "а", None)], grammar=[], exercises=[],
             )
 
+    def test_generation_id_history_survives_content_deletion_and_replacement(self) -> None:
+        # save A
+        self.assertEqual(
+            self.db.save_generated_draft(
+                self.lesson["id"], generation_id="A", owner_user_id=self.teacher["id"],
+                words=[("a", "а", None)], grammar=[], exercises=[],
+            ),
+            "saved",
+        )
+        # delete all content via a normal repository method
+        for word in self.db.list_lesson_words(self.lesson["id"]):
+            self.db.execute("DELETE FROM lesson_words WHERE id = ?", (word["id"],))
+
+        # save B into the now-empty lesson
+        self.assertEqual(
+            self.db.save_generated_draft(
+                self.lesson["id"], generation_id="B", owner_user_id=self.teacher["id"],
+                words=[("b", "б", None)], grammar=[], exercises=[],
+            ),
+            "saved",
+        )
+        for word in self.db.list_lesson_words(self.lesson["id"]):
+            self.db.execute("DELETE FROM lesson_words WHERE id = ?", (word["id"],))
+
+        # re-saving A must still be recognized as already used, even though it
+        # is no longer the lesson's *latest* generation_id and its content was
+        # long since deleted.
+        result = self.db.save_generated_draft(
+            self.lesson["id"], generation_id="A", owner_user_id=self.teacher["id"],
+            words=[("a2", "а2", None)], grammar=[], exercises=[],
+        )
+        self.assertEqual(result, "already_saved")
+        self.assertEqual(len(self.db.list_lesson_words(self.lesson["id"])), 0)
+
+    def test_forbidden_when_required_teacher_does_not_own_lesson(self) -> None:
+        other_teacher = self.db.upsert_user(2, "other", "Other")
+        result = self.db.save_generated_draft(
+            self.lesson["id"], generation_id="gen-1", owner_user_id=other_teacher["id"],
+            words=[("a", "а", None)], grammar=[], exercises=[],
+            required_teacher_user_id=other_teacher["id"],
+        )
+        self.assertEqual(result, "forbidden")
+        self.assertEqual(len(self.db.list_lesson_words(self.lesson["id"])), 0)
+        row = self.db.fetchone(
+            "SELECT 1 FROM saved_ai_draft_generations WHERE generation_id = ?", ("gen-1",)
+        )
+        self.assertIsNone(row)
+
+    def test_admin_bypasses_ownership_when_required_teacher_user_id_is_none(self) -> None:
+        result = self.db.save_generated_draft(
+            self.lesson["id"], generation_id="gen-1", owner_user_id=self.teacher["id"],
+            words=[("a", "а", None)], grammar=[], exercises=[],
+            required_teacher_user_id=None,
+        )
+        self.assertEqual(result, "saved")
+
+    def test_owning_teacher_can_save_with_required_teacher_user_id(self) -> None:
+        result = self.db.save_generated_draft(
+            self.lesson["id"], generation_id="gen-1", owner_user_id=self.teacher["id"],
+            words=[("a", "а", None)], grammar=[], exercises=[],
+            required_teacher_user_id=self.teacher["id"],
+        )
+        self.assertEqual(result, "saved")
+
+    def test_non_draft_lesson_is_rejected_without_partial_writes(self) -> None:
+        self.db.execute("UPDATE lessons SET status = ? WHERE id = ?", ("PUBLISHED", self.lesson["id"]))
+        result = self.db.save_generated_draft(
+            self.lesson["id"], generation_id="gen-1", owner_user_id=self.teacher["id"],
+            words=[("a", "а", None)],
+            grammar=[("G", "E", None)],
+            exercises=[("Q", json.dumps(["A", "B"]), 0, None)],
+        )
+        self.assertEqual(result, "not_draft")
+        self.assertEqual(len(self.db.list_lesson_words(self.lesson["id"])), 0)
+        self.assertEqual(len(self.db.list_grammar_items(self.lesson["id"])), 0)
+        self.assertEqual(len(self.db.list_exercise_items(self.lesson["id"])), 0)
+        row = self.db.fetchone(
+            "SELECT 1 FROM saved_ai_draft_generations WHERE generation_id = ?", ("gen-1",)
+        )
+        self.assertIsNone(row)
+
 
 class SaveGeneratedDraftServiceTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -316,6 +403,36 @@ class SaveGeneratedDraftServiceTests(unittest.TestCase):
                 words=[("a", "а", None)], grammar=[], exercises=[],
             )
 
+    def test_other_teacher_cannot_save_into_lesson_they_do_not_own(self) -> None:
+        other_teacher = self.db.upsert_user(2, "other", "Other")
+        with self.assertRaises(DraftSaveForbiddenError):
+            self.service.save_generated_draft(
+                self.lesson["id"], generation_id="gen-1", owner_user_id=other_teacher["id"],
+                words=[("a", "а", None)], grammar=[], exercises=[],
+                required_teacher_user_id=other_teacher["id"],
+            )
+        self.assertEqual(len(self.db.list_lesson_words(self.lesson["id"])), 0)
+        self.assertIsNone(
+            self.db.fetchone("SELECT 1 FROM saved_ai_draft_generations WHERE generation_id = ?", ("gen-1",))
+        )
+
+    def test_admin_required_teacher_user_id_none_allows_save(self) -> None:
+        summary = self.service.save_generated_draft(
+            self.lesson["id"], generation_id="gen-1", owner_user_id=self.teacher["id"],
+            words=[("a", "а", None)], grammar=[], exercises=[],
+            required_teacher_user_id=None,
+        )
+        self.assertEqual(summary["words_count"], 1)
+
+    def test_non_draft_lesson_raises_value_error(self) -> None:
+        self.db.execute("UPDATE lessons SET status = ? WHERE id = ?", ("PUBLISHED", self.lesson["id"]))
+        with self.assertRaises(ValueError):
+            self.service.save_generated_draft(
+                self.lesson["id"], generation_id="gen-1", owner_user_id=self.teacher["id"],
+                words=[("a", "а", None)], grammar=[], exercises=[],
+            )
+        self.assertEqual(len(self.db.list_lesson_words(self.lesson["id"])), 0)
+
 
 class SaveGeneratedDraftRuntimeIntegrationTests(unittest.TestCase):
     """Confirms saved AI content is indistinguishable from manually-added content
@@ -375,13 +492,14 @@ class SaveGeneratedDraftHandlerTests(unittest.IsolatedAsyncioTestCase):
         class RoleSettings:
             allowed_usernames: frozenset = frozenset({"privetnormalno"})
             admin_usernames: frozenset = frozenset({"wp_bvv"})
-            teacher_usernames: frozenset = frozenset({"romateaches"})
+            teacher_usernames: frozenset = frozenset({"romateaches", "annateaches"})
 
         self.RoleSettings = RoleSettings
         self.temp_dir = TemporaryDirectory()
         self.db = Database(Path(self.temp_dir.name) / "test.sqlite3")
         self.db.init_schema()
         self.teacher = self.db.upsert_user(101, "romateaches", "Roma")
+        self.other_teacher = self.db.upsert_user(102, "annateaches", "Anna")
         self.student = self.db.upsert_user(103, "privetnormalno", "Student")
         self.context = SimpleNamespace(
             application=SimpleNamespace(bot_data={"db": self.db, "settings": RoleSettings()}),
@@ -572,6 +690,56 @@ class SaveGeneratedDraftHandlerTests(unittest.IsolatedAsyncioTestCase):
 
         service = LessonService(LessonRepository(self.db))
         self.assertEqual(service.get_lesson_summary(self.lesson["id"])["words_count"], 0)
+
+    async def test_other_teacher_cannot_save_into_lesson_they_do_not_own(self) -> None:
+        # self.lesson belongs to "romateaches" (self.teacher); "annateaches" is a
+        # real teacher too, but not this lesson's owner.
+        draft = _sample_draft(words=2, grammar=0, exercises=0)
+        await self._reach_ready_screen(draft)
+
+        save_update = self._callback_update(
+            f"{TEACHER_AI_DRAFT_SAVE_PREFIX}{self.lesson['id']}", username="annateaches", user_id=102
+        )
+        await handle_teacher_ai_draft_callback(save_update, self.context)
+        self.assertIn("нет прав", save_update.callback_query.edits[-1][0])
+
+        service = LessonService(LessonRepository(self.db))
+        self.assertEqual(service.get_lesson_summary(self.lesson["id"])["words_count"], 0)
+        self.assertIsNone(
+            self.db.fetchone(
+                "SELECT 1 FROM saved_ai_draft_generations WHERE generation_id = ?",
+                (str(draft.metadata.generation_id),),
+            )
+        )
+
+    async def test_admin_can_save_into_any_teachers_lesson(self) -> None:
+        self.db.upsert_user(999, "wp_bvv", "Admin")
+        draft = _sample_draft(words=2, grammar=0, exercises=0)
+        await self._reach_ready_screen(draft)  # generated/confirmed as "romateaches", the lesson's owner
+
+        self.context.user_data["admin_teacher_view"] = True
+        save_update = self._callback_update(
+            f"{TEACHER_AI_DRAFT_SAVE_PREFIX}{self.lesson['id']}", username="wp_bvv", user_id=999
+        )
+        await handle_teacher_ai_draft_callback(save_update, self.context)
+        self.assertIn("✅ Материалы сохранены", save_update.callback_query.edits[-1][0])
+
+        service = LessonService(LessonRepository(self.db))
+        self.assertEqual(service.get_lesson_summary(self.lesson["id"])["words_count"], 2)
+
+    async def test_save_success_screen_uses_returned_summary_not_draft_length(self) -> None:
+        draft = _sample_draft(words=5, grammar=5, exercises=5)
+        await self._reach_ready_screen(draft)
+
+        fake_summary = {"words_count": 1, "grammar_count": 2, "exercises_count": 3}
+        with patch.object(LessonService, "save_generated_draft", return_value=fake_summary):
+            save_update = self._callback_update(f"{TEACHER_AI_DRAFT_SAVE_PREFIX}{self.lesson['id']}")
+            await handle_teacher_ai_draft_callback(save_update, self.context)
+
+        text = save_update.callback_query.edits[-1][0]
+        self.assertIn("📚 Слова: 1", text)
+        self.assertIn("📘 Грамматика: 2", text)
+        self.assertIn("📝 Упражнения: 3", text)
 
 
 if __name__ == "__main__":

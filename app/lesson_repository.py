@@ -83,6 +83,7 @@ class LessonRepository:
         words: list[tuple[str, str, str | None]],
         grammar: list[tuple[str, str, str | None]],
         exercises: list[tuple[str, str, int, str | None]],
+        required_teacher_user_id: int | None = None,
     ) -> str:
         return self.db.save_generated_draft(
             lesson_id,
@@ -91,6 +92,7 @@ class LessonRepository:
             words=words,
             grammar=grammar,
             exercises=exercises,
+            required_teacher_user_id=required_teacher_user_id,
         )
 
     def assign_lesson_to_student(self, lesson_id: int, student_username: str, assigned_by_user_id: int | None = None) -> sqlite3.Row:

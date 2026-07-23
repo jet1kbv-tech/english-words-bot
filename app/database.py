@@ -214,6 +214,13 @@ class Database:
                 UNIQUE(assignment_id, grammar_item_id)
             );
 
+            CREATE TABLE IF NOT EXISTS saved_ai_draft_generations (
+                generation_id TEXT PRIMARY KEY,
+                lesson_id INTEGER NOT NULL,
+                saved_at TEXT NOT NULL,
+                FOREIGN KEY (lesson_id) REFERENCES lessons(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS user_tutorials (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -838,6 +845,7 @@ class Database:
         words: list[tuple[str, str, str | None]],
         grammar: list[tuple[str, str, str | None]],
         exercises: list[tuple[str, str, int, str | None]],
+        required_teacher_user_id: int | None = None,
     ) -> str:
         """Atomically saves an AI-generated draft's content into a lesson.
 
@@ -845,27 +853,49 @@ class Database:
         (same shape as `add_exercise_item`'s `options_json`), so this method
         stays free of any AI-DTO-specific knowledge.
 
-        Returns "saved", "already_saved" (this generation_id was already
-        stored on the lesson - a no-op) or "conflict" (a target section with
-        draft content is already non-empty). Raises ValueError if the lesson
-        does not exist or no word owner can be resolved. The generation_id
-        check, the section-emptiness check, and all inserts happen inside a
-        single explicit transaction (BEGIN IMMEDIATE) to avoid a race between
-        a concurrent check and write.
-        """
-        lesson = self.get_lesson(lesson_id)
-        if lesson is None:
-            raise ValueError("lesson not found")
-        owner_id = owner_user_id or lesson["teacher_user_id"] or lesson["student_user_id"]
-        if owner_id is None:
-            raise ValueError("word owner is required")
+        `required_teacher_user_id`, when given, restricts the save to a
+        lesson owned by that exact teacher (regular-teacher semantics); pass
+        `None` to allow saving into any lesson regardless of owner
+        (admin semantics) - this method only enforces whichever the caller
+        passes, it has no notion of Telegram roles itself.
 
+        Returns "saved", "already_saved" (this generation_id was already
+        saved - anywhere, ever, since `saved_ai_draft_generations.generation_id`
+        is a permanent history, not just the lesson's last save - a no-op),
+        "conflict" (a target section with draft content is already
+        non-empty), "forbidden" (`required_teacher_user_id` does not own the
+        lesson), or "not_draft" (the lesson's status isn't DRAFT). Raises
+        ValueError if the lesson does not exist or no word owner can be
+        resolved. Every read this depends on - lesson existence/owner/status,
+        generation_id history, section counts - happens inside one explicit
+        transaction (BEGIN IMMEDIATE) together with the writes, so nothing
+        can change between a check and the write it guards.
+        """
         self._connection.execute("BEGIN IMMEDIATE")
         try:
-            current = self._connection.execute(
-                "SELECT ai_draft_generation_id FROM lessons WHERE id = ?", (lesson_id,)
+            lesson = self._connection.execute(
+                "SELECT teacher_user_id, student_user_id, status FROM lessons WHERE id = ?",
+                (lesson_id,),
             ).fetchone()
-            if current is not None and current["ai_draft_generation_id"] == generation_id:
+            if lesson is None:
+                raise ValueError("lesson not found")
+
+            owner_id = owner_user_id or lesson["teacher_user_id"] or lesson["student_user_id"]
+            if owner_id is None:
+                raise ValueError("word owner is required")
+
+            if required_teacher_user_id is not None and lesson["teacher_user_id"] != required_teacher_user_id:
+                self._connection.rollback()
+                return "forbidden"
+
+            if lesson["status"] != "DRAFT":
+                self._connection.rollback()
+                return "not_draft"
+
+            already_used = self._connection.execute(
+                "SELECT 1 FROM saved_ai_draft_generations WHERE generation_id = ?", (generation_id,)
+            ).fetchone()
+            if already_used is not None:
                 self._connection.rollback()
                 return "already_saved"
 
@@ -921,6 +951,10 @@ class Database:
                     (lesson_id, position, prompt, options_json, correct_option_index, explanation, now, now),
                 )
 
+            self._connection.execute(
+                "INSERT INTO saved_ai_draft_generations (generation_id, lesson_id, saved_at) VALUES (?, ?, ?)",
+                (generation_id, lesson_id, now),
+            )
             self._connection.execute(
                 "UPDATE lessons SET ai_draft_generation_id = ?, updated_at = ? WHERE id = ?",
                 (generation_id, now, lesson_id),
