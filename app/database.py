@@ -115,6 +115,7 @@ class Database:
                 theme TEXT,
                 grammar_topic TEXT,
                 status TEXT NOT NULL DEFAULT 'DRAFT',
+                ai_draft_generation_id TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -269,11 +270,12 @@ class Database:
                     theme TEXT,
                     grammar_topic TEXT,
                     status TEXT NOT NULL DEFAULT 'DRAFT',
+                    ai_draft_generation_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-                INSERT INTO lessons (id, teacher_user_id, student_user_id, title, lesson_number, topic, description, level, theme, grammar_topic, status, created_at, updated_at)
-                SELECT id, teacher_user_id, student_user_id, title, NULL, NULL, NULL, NULL, theme, grammar_topic, upper(status), created_at, updated_at
+                INSERT INTO lessons (id, teacher_user_id, student_user_id, title, lesson_number, topic, description, level, theme, grammar_topic, status, ai_draft_generation_id, created_at, updated_at)
+                SELECT id, teacher_user_id, student_user_id, title, NULL, NULL, NULL, NULL, theme, grammar_topic, upper(status), NULL, created_at, updated_at
                 FROM lessons_old;
                 DROP TABLE lessons_old;
                 PRAGMA foreign_keys = ON;
@@ -286,6 +288,7 @@ class Database:
                 "topic": "TEXT NULL",
                 "description": "TEXT NULL",
                 "level": "TEXT NULL",
+                "ai_draft_generation_id": "TEXT NULL",
             }
             for column_name, column_type in metadata_columns.items():
                 if column_name not in columns:
@@ -825,6 +828,108 @@ class Database:
                 (lesson_id, word_id, now),
             )
         return self.list_lesson_words(lesson_id)[-len(created_word_ids):]
+
+    def save_generated_draft(
+        self,
+        lesson_id: int,
+        *,
+        generation_id: str,
+        owner_user_id: int | None,
+        words: list[tuple[str, str, str | None]],
+        grammar: list[tuple[str, str, str | None]],
+        exercises: list[tuple[str, str, int, str | None]],
+    ) -> str:
+        """Atomically saves an AI-generated draft's content into a lesson.
+
+        `exercises` options are expected pre-serialized to JSON by the caller
+        (same shape as `add_exercise_item`'s `options_json`), so this method
+        stays free of any AI-DTO-specific knowledge.
+
+        Returns "saved", "already_saved" (this generation_id was already
+        stored on the lesson - a no-op) or "conflict" (a target section with
+        draft content is already non-empty). Raises ValueError if the lesson
+        does not exist or no word owner can be resolved. The generation_id
+        check, the section-emptiness check, and all inserts happen inside a
+        single explicit transaction (BEGIN IMMEDIATE) to avoid a race between
+        a concurrent check and write.
+        """
+        lesson = self.get_lesson(lesson_id)
+        if lesson is None:
+            raise ValueError("lesson not found")
+        owner_id = owner_user_id or lesson["teacher_user_id"] or lesson["student_user_id"]
+        if owner_id is None:
+            raise ValueError("word owner is required")
+
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            current = self._connection.execute(
+                "SELECT ai_draft_generation_id FROM lessons WHERE id = ?", (lesson_id,)
+            ).fetchone()
+            if current is not None and current["ai_draft_generation_id"] == generation_id:
+                self._connection.rollback()
+                return "already_saved"
+
+            counts = self._connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM lesson_words WHERE lesson_id = :lesson_id) AS words_count,
+                    (SELECT COUNT(*) FROM lesson_grammar_items WHERE lesson_id = :lesson_id) AS grammar_count,
+                    (SELECT COUNT(*) FROM lesson_exercise_items WHERE lesson_id = :lesson_id) AS exercises_count
+                """,
+                {"lesson_id": lesson_id},
+            ).fetchone()
+            if words and counts["words_count"] > 0:
+                self._connection.rollback()
+                return "conflict"
+            if grammar and counts["grammar_count"] > 0:
+                self._connection.rollback()
+                return "conflict"
+            if exercises and counts["exercises_count"] > 0:
+                self._connection.rollback()
+                return "conflict"
+
+            now = utc_now()
+            for english, translation, example in words:
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO words (owner_user_id, english, translation, topic, example, created_at, updated_at)
+                    VALUES (?, ?, ?, NULL, ?, ?, ?)
+                    """,
+                    (owner_id, english, translation, example, now, now),
+                )
+                word_id = int(cursor.lastrowid)
+                self._connection.execute(
+                    "INSERT INTO lesson_words (lesson_id, word_id, created_at) VALUES (?, ?, ?)",
+                    (lesson_id, word_id, now),
+                )
+
+            for position, (title, explanation, example) in enumerate(grammar):
+                self._connection.execute(
+                    """
+                    INSERT INTO lesson_grammar_items (lesson_id, position, title, explanation, example, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (lesson_id, position, title, explanation, example, now, now),
+                )
+
+            for position, (prompt, options_json, correct_option_index, explanation) in enumerate(exercises):
+                self._connection.execute(
+                    """
+                    INSERT INTO lesson_exercise_items (lesson_id, position, prompt, options_json, correct_option_index, explanation, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (lesson_id, position, prompt, options_json, correct_option_index, explanation, now, now),
+                )
+
+            self._connection.execute(
+                "UPDATE lessons SET ai_draft_generation_id = ?, updated_at = ? WHERE id = ?",
+                (generation_id, now, lesson_id),
+            )
+            self._connection.commit()
+            return "saved"
+        except Exception:
+            self._connection.rollback()
+            raise
 
     def add_word_to_lesson(self, lesson_id: int, word_id: int) -> bool:
         cursor = self.execute(

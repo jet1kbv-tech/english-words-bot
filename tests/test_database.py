@@ -231,6 +231,39 @@ class LessonDatabaseTests(unittest.TestCase):
         self.assertEqual(legacy["status"], "DRAFT")
         self.assertIsNone(legacy["topic"])
 
+    def test_ai_draft_generation_id_column_is_idempotently_added(self) -> None:
+        self.db.execute("ALTER TABLE lessons RENAME TO lessons_new")
+        self.db.execute("""
+            CREATE TABLE lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                teacher_user_id INTEGER,
+                student_user_id INTEGER,
+                title TEXT NOT NULL,
+                lesson_number INTEGER,
+                topic TEXT,
+                description TEXT,
+                level TEXT,
+                theme TEXT,
+                grammar_topic TEXT,
+                status TEXT NOT NULL DEFAULT 'DRAFT',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        self.db.execute("""
+            INSERT INTO lessons (teacher_user_id, student_user_id, title, status, created_at, updated_at)
+            VALUES (?, NULL, 'Legacy', 'DRAFT', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+        """, (self.teacher["id"],))
+        self.db.execute("DROP TABLE lessons_new")
+
+        self.db.init_schema()
+        self.db.init_schema()
+
+        columns = {row["name"] for row in self.db.fetchall("PRAGMA table_info(lessons)")}
+        self.assertIn("ai_draft_generation_id", columns)
+        legacy = self.db.list_lessons()[0]
+        self.assertIsNone(legacy["ai_draft_generation_id"])
+
     def test_teacher_lesson_metadata_parser_variants(self) -> None:
         travel = self.db.create_teacher_lesson("15 - Travel", self.teacher["id"])
         food = self.db.create_teacher_lesson("Food", self.teacher["id"])

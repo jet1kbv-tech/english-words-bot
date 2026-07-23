@@ -42,6 +42,14 @@ class ExerciseItemError(ValueError):
     pass
 
 
+class DraftSaveConflictError(ValueError):
+    """Raised when a lesson section targeted by the draft already has content."""
+
+
+class DraftAlreadySavedError(ValueError):
+    """Raised when this exact generation_id has already been saved into the lesson."""
+
+
 def _validated_prompt(prompt: str, *, empty_message: str, max_length: int = MAX_HOMEWORK_PROMPT_LENGTH) -> str:
     prompt = prompt.strip()
     if not prompt:
@@ -100,6 +108,63 @@ class LessonService:
         if not words:
             raise ValueError("words must not be empty")
         return self.repository.add_lesson_words(lesson_id, words, owner_user_id)
+
+    def save_generated_draft(
+        self,
+        lesson_id: int,
+        *,
+        generation_id: str,
+        owner_user_id: int | None,
+        words: list[tuple[str, str, str | None]],
+        grammar: list[tuple[str, str, str | None]],
+        exercises: list[tuple[str, list[str], int, str | None]],
+    ) -> sqlite3.Row:
+        """Atomically saves an AI-generated draft's words/grammar/exercises into a lesson.
+
+        `words`/`grammar` are (text-fields...) tuples straight from the draft.
+        `exercises` are (prompt, options, correct_option_index, explanation)
+        tuples; this method serializes `options` to JSON itself, matching
+        `add_exercise_item`'s options_json shape, so the caller never needs to
+        know about that storage detail. Raises `DraftAlreadySavedError` if this
+        generation_id was already saved (no-op, not an error the caller needs
+        to treat as failure), `DraftSaveConflictError` if a targeted section
+        already has content, or `ValueError` for a missing lesson/owner or an
+        invalid exercise shape. Returns the fresh lesson summary on success.
+        """
+        generation_id = generation_id.strip()
+        if not generation_id:
+            raise ValueError("generation_id is required")
+
+        cleaned_exercises: list[tuple[str, str, int, str | None]] = []
+        for prompt, options, correct_option_index, explanation in exercises:
+            cleaned_options = [option.strip() for option in options if option.strip()]
+            if len(cleaned_options) < MIN_EXERCISE_OPTIONS or len(cleaned_options) > MAX_EXERCISE_OPTIONS:
+                raise ExerciseItemError("Некорректное количество вариантов ответа в черновике.")
+            if isinstance(correct_option_index, bool) or not isinstance(correct_option_index, int):
+                raise ExerciseItemError("Некорректный номер правильного варианта в черновике.")
+            if not (0 <= correct_option_index < len(cleaned_options)):
+                raise ExerciseItemError("Номер правильного варианта вне диапазона.")
+            cleaned_exercises.append((prompt, json.dumps(cleaned_options, ensure_ascii=False), correct_option_index, explanation))
+
+        outcome = self.repository.save_generated_draft(
+            lesson_id,
+            generation_id=generation_id,
+            owner_user_id=owner_user_id,
+            words=words,
+            grammar=grammar,
+            exercises=cleaned_exercises,
+        )
+        if outcome == "already_saved":
+            raise DraftAlreadySavedError("Этот черновик уже был сохранён в урок.")
+        if outcome == "conflict":
+            raise DraftSaveConflictError(
+                "Не удалось сохранить черновик: один или несколько разделов урока уже содержат материалы. "
+                "Чтобы не потерять ручные изменения, автоматическое объединение пока недоступно."
+            )
+        summary = self.repository.get_lesson_summary(lesson_id)
+        if summary is None:
+            raise ValueError("lesson not found")
+        return summary
 
     def assign_lesson_to_student(self, lesson_id: int, student_username: str, assigned_by_user_id: int | None = None) -> sqlite3.Row:
         normalized = normalize_username(student_username)

@@ -310,7 +310,7 @@ Provider просит модель вернуть JSON:
 
 ### 7.4 Lesson Draft Generator (AI Draft Generator v1)
 
-Первый шаг к будущему AI Lesson Builder: учитель может сгенерировать **черновик** содержимого DRAFT-урока (слова, грамматика, упражнения) с помощью AI. Черновик существует только в памяти Telegram-сессии и не сохраняется в SQLite. Ключевой принцип: AI не создаёт урок напрямую, не пишет в lesson tables и не публикует/назначает контент ученику — сохранение и объединение с существующим контентом запланированы в отдельном будущем PR.
+Первый шаг к будущему AI Lesson Builder: учитель может сгенерировать **черновик** содержимого DRAFT-урока (слова, грамматика, упражнения) с помощью AI. Пока черновик не сохранён, он существует только в памяти Telegram-сессии. Ключевой принцип не изменился и после того, как сохранение реализовано (см. 7.5): AI не создаёт урок напрямую, не пишет в lesson tables и не публикует/назначает контент ученику сам — весь путь записи идёт исключительно через `LessonService`/`LessonRepository`, теми же методами, что использует ручное добавление контента.
 
 Модули (расширяют существующий пакет `app/ai/`, второй HTTP-клиент не создаётся):
 
@@ -346,7 +346,26 @@ Retry в этом PR — только ручной: одна попытка на
 
 Просмотр черновика постраничный (слова — по 5 на страницу, грамматика и упражнения — по одной карточке на страницу, с показом правильного варианта — это teacher preview). Callback data не содержит текста черновика, только `lesson_id`/раздел/страницу; каждый callback заново проверяет права (`is_teacher`), статус урока (`DRAFT`) и совпадение `lesson_id` состояния с `lesson_id` из callback. При потере состояния (например, после перезапуска бота) показывается «Черновик больше недоступен. Сгенерируйте его заново.» — это ожидаемое ограничение v1: черновик не переживает перезапуск процесса.
 
-Точка входа — кнопка `✨ Создать контент с AI` на экране `🤖 AI-помощник` внутри DRAFT-урока (доступна только teacher/admin через существующий `RoleResolver`/`is_teacher`). Если в уроке уже есть контент, перед началом мастера показывается предупреждение о том, что AI создаст отдельный черновик и не изменит существующие материалы. Логи содержат количество запрошенных элементов, уровень, длину ответа AI, класс исключения и (после успешной генерации) `generation_id`/`provider`/`model`/`prompt_version`, но не полный prompt/ответ модели, не весь `GeneratedLessonDraft` и не API-ключ.
+Точка входа — кнопка `✨ Создать контент с AI` на экране `🤖 AI-помощник` внутри DRAFT-урока (доступна только teacher/admin через существующий `RoleResolver`/`is_teacher`). Если в уроке уже есть контент, перед началом мастера показывается предупреждение о том, что AI создаст отдельный черновик и не изменит существующие материалы (это только advisory-предупреждение — жёсткая проверка происходит при сохранении, см. 7.5). Логи содержат количество запрошенных элементов, уровень, длину ответа AI, класс исключения и (после успешной генерации) `generation_id`/`provider`/`model`/`prompt_version`, но не полный prompt/ответ модели, не весь `GeneratedLessonDraft` и не API-ключ.
+
+### 7.5 Save Generated Draft into Lesson
+
+Экран `✨ Черновик готов` (после успешной генерации) содержит кнопки `👀 Посмотреть`, `✅ Сохранить в урок`, `🔄 Сгенерировать заново`, `Отмена`. `✅ Сохранить в урок` переносит проверенный `GeneratedLessonDraft` из `context.user_data` в реальные lesson-таблицы, после чего Lesson Runtime (`app/lesson_runtime.py`, `app/handlers/student_lessons.py`) видит контент точно так же, как ручные слова/грамматику/упражнения — без единого AI-импорта на этом пути.
+
+**Слои и ответственность** (строго Teacher Handler → LessonService → LessonRepository → SQLite; второй независимый SQL-путь не создаётся):
+
+- `app/handlers/teacher_ai_draft.py::_save_draft_to_lesson(...)` — единственное место, которое знает и про `GeneratedLessonDraft`, и про Lesson-слои. Конвертирует DTO в примитивы (`(source, translation, example)` для слов, `(title, explanation, example)` для грамматики, `(prompt, options, correct_option_index, explanation)` для упражнений) и вызывает `LessonService.save_generated_draft(...)`. Никакого SQL и никакого прямого обращения к `Database` в handler-коде нет.
+- `LessonService.save_generated_draft(...)` (`app/lesson_service.py`) — валидирует форму (непустой `generation_id`, 2–6 опций на упражнение, `correct_option_index` в диапазоне и не `bool`) без дублирования полной AI JSON-валидации, сериализует `options` в `options_json` (как `add_exercise_item`), делегирует в repository и транслирует исход в понятные типы: `DraftAlreadySavedError`, `DraftSaveConflictError` (оба — `ValueError`, с тем же паттерном, что `GrammarItemError`/`ExerciseItemError`: сообщение исключения — это готовый текст для пользователя) или обычный `ValueError` для отсутствующего урока.
+- `LessonRepository.save_generated_draft(...)` — тонкий passthrough к `Database.save_generated_draft(...)`, как и все остальные методы репозитория.
+- `Database.save_generated_draft(...)` (`app/database.py`) — единственное место, где происходит запись. Открывает явную транзакцию (`BEGIN IMMEDIATE`), затем внутри неё: (1) сверяет `lessons.ai_draft_generation_id` с переданным `generation_id`; (2) считает текущие `words_count`/`grammar_count`/`exercises_count` урока; (3) вставляет `words`+`lesson_words`, `lesson_grammar_items`, `lesson_exercise_items` и обновляет `lessons.ai_draft_generation_id`; (4) `commit()`. Любое исключение по пути — `rollback()` и проброс наружу. Обычные `Database`-методы коммитят на каждый `execute(...)`; этот метод сознательно работает через `self._connection.execute(...)` напрямую и коммитит один раз в конце — иначе атомарность невозможна.
+
+**Идемпотентность / защита от двойного сохранения**: nullable-колонка `lessons.ai_draft_generation_id TEXT` (additive-миграция, как и остальные, через `_ensure_lessons_schema()`). Проверка «этот `generation_id` уже сохранён» и проверка «раздел ещё пуст» находятся **внутри одной транзакции** с записью — не только в `context.user_data`, значит защита переживает перезапуск процесса. Порядок проверок важен: сперва `generation_id`, потом пустота разделов — иначе повторный клик по уже сохранённому черновику ошибочно показал бы «раздел уже заполнен» вместо «черновик уже был сохранён». `generation_id` для сравнения приходит из уже провалидированной AI-metadata (7.4), а не из Telegram callback data.
+
+**Правило для непустых разделов**: сохранение блокируется целиком (`DraftSaveConflictError`, ничего не пишется), если хотя бы один из разделов, для которых в draft есть элементы, уже не пуст на уроке. Раздел, для которого в draft 0 элементов, не блокирует сохранение остальных. Merge/replace/dedup существующего контента не реализован — только это булево правило "пусто → можно писать".
+
+**Что переносится**: слова (`source`→`words.english`, `translation`, `example`), грамматика (`title`, `explanation`, `example`), упражнения (`prompt`, `options`→`options_json`, `correct_option_index` без смещения — сохраняется тем же 0-based индексом, `explanation`). `lessons.topic`/`level`/`description` в этом PR **не переносятся** из черновика: `topic` уже выставляется при создании урока через `parse_lesson_title`, а `level`/`description` не устанавливает ни один существующий flow — переносить их означало бы вводить новую, нигде не описанную семантику, чего эта задача не требует.
+
+**После успешного сохранения**: `context.user_data["ai_lesson_drafts"][lesson_id]` удаляется (повторный клик увидит «Черновик не найден или устарел» на уровне Telegram-состояния, а даже если состояние каким-то образом сохранилось — SQLite-проверка `generation_id` перехватит повтор). Учителю показывается сводка с реальными сохранёнными количествами и кнопка `⬅️ К уроку`.
 
 ## 8. Database tables
 
@@ -452,7 +471,7 @@ Future statuses:
 - `PUBLISHED`
 - `ARCHIVED`
 
-Teacher Lesson UI currently supports listing and creating draft lessons. Teacher Lesson Detail is organized as sections: Слова, Грамматика, Упражнения, Домашнее задание, AI-помощник (labels russified). Слова, Грамматика, Упражнения and Домашнее задание have real list/add/detail/delete screens (manual content only); AI-помощник now has a real entry screen (`✨ Создать контент с AI`, gated on `status == DRAFT`) that starts the AI Draft Generator v1 wizard described in 7.4 — it only produces an in-memory draft for preview, it does not write words/grammar/exercises into the lesson. Saving/merging the generated draft into the real lesson is a separate future PR.
+Teacher Lesson UI currently supports listing and creating draft lessons. Teacher Lesson Detail is organized as sections: Слова, Грамматика, Упражнения, Домашнее задание, AI-помощник (labels russified). Слова, Грамматика, Упражнения and Домашнее задание have real list/add/detail/delete screens (manual content only); AI-помощник now has a real entry screen (`✨ Создать контент с AI`, gated on `status == DRAFT`) that starts the AI Draft Generator v1 wizard described in 7.4. The generated draft can now be saved into the lesson's real words/grammar/exercises via `✅ Сохранить в урок` (see 7.5) through the same `LessonService`/`LessonRepository` path manual content uses — the Lesson Runtime has no AI-specific code and cannot tell saved AI content apart from manually-added content. Editing an already-generated draft before saving, and merging into an already-non-empty section, remain out of scope (Teacher Draft Editor is a separate future milestone).
 
 В будущем урок будет связывать четыре направления данных:
 
@@ -478,6 +497,7 @@ Teacher Lesson UI currently supports listing and creating draft lessons. Teacher
 | `theme` | TEXT | optional lexical/theme focus |
 | `grammar_topic` | TEXT | optional grammar focus |
 | `status` | TEXT NOT NULL DEFAULT `DRAFT` | lifecycle status |
+| `ai_draft_generation_id` | TEXT NULL | `generation_id` (as string) of the last AI draft saved into this lesson via `Database.save_generated_draft(...)`; `NULL` until the first successful save. Used as the idempotency guard — see 7.5 |
 | `created_at` | TEXT NOT NULL | UTC ISO string |
 | `updated_at` | TEXT NOT NULL | UTC ISO string |
 
