@@ -16,6 +16,7 @@ already-non-empty section remain out of scope.
 from __future__ import annotations
 
 import logging
+import secrets
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
@@ -165,6 +166,21 @@ def _parse_lesson_and_value(data: str, prefix: str) -> tuple[int, str] | None:
     return int(lesson_id_text), value
 
 
+def _generate_draft_revision() -> str:
+    """A short, URL-safe token identifying one in-memory draft "generation" for editor
+    callback data — cheap to embed unlike the full `generation_id` UUID, and lets stale
+    callbacks/pending input from a since-regenerated draft be detected and rejected."""
+    return secrets.token_urlsafe(6)
+
+
+def _editor_callback_data(prefix: str, *parts: object) -> str:
+    data = prefix + ":".join(str(part) for part in parts)
+    byte_length = len(data.encode("utf-8"))
+    if byte_length > 64:
+        raise ValueError(f"AI draft editor callback_data exceeds Telegram's 64-byte limit ({byte_length} bytes): {data!r}")
+    return data
+
+
 def _has_existing_content(summary) -> bool:
     return int(summary["words_count"] or 0) > 0 or int(summary["grammar_count"] or 0) > 0 or int(summary["exercises_count"] or 0) > 0
 
@@ -201,6 +217,36 @@ def _clear_state(context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> None:
     pending = context.user_data.get(_PENDING_EDITOR_KEY)
     if pending is not None and pending.get("lesson_id") == lesson_id:
         _clear_pending_editor(context)
+
+
+def _clear_stale_pending(context: ContextTypes.DEFAULT_TYPE, lesson_id: int | None, current_revision: str | None) -> None:
+    """Clears pending editor state only if it belongs to this lesson_id and to a
+    revision other than `current_revision` — i.e. only if it is actually stale."""
+    pending = context.user_data.get(_PENDING_EDITOR_KEY)
+    if pending is not None and pending.get("lesson_id") == lesson_id and pending.get("revision") != current_revision:
+        _clear_pending_editor(context)
+
+
+def _resolve_editor_action(
+    context: ContextTypes.DEFAULT_TYPE, service: LessonService, lesson_id: int | None, revision: str
+) -> GeneratedLessonDraft | None:
+    """Resolves the draft for an editor callback, requiring both `lesson_id` and
+    `revision` to match the current in-memory draft for that lesson. On any mismatch
+    (missing/unauthorized lesson, or a revision from a since-regenerated draft), any
+    pending editor state belonging to the stale revision is cleared and `None` is
+    returned — callers must then show the existing safe "draft is stale" message
+    without touching the draft."""
+    summary = _authorize(service, lesson_id)
+    state = _get_state(context, lesson_id) if lesson_id is not None else None
+    draft = state.get("draft") if state is not None else None
+    if summary is None or state is None or draft is None:
+        _clear_stale_pending(context, lesson_id, None)
+        return None
+    current_revision = state.get("draft_revision")
+    if current_revision != revision:
+        _clear_stale_pending(context, lesson_id, current_revision)
+        return None
+    return draft
 
 
 def _entry_screen(lesson_id: int, summary) -> tuple[str, InlineKeyboardMarkup]:
@@ -450,8 +496,14 @@ _WORD_FIELD_PROMPTS = {
     "example": "Введите новый пример.\nОтправьте «-», чтобы удалить пример.",
 }
 
+# Callback data is byte-constrained (Telegram's 64-byte callback_data limit), so word
+# fields use a 1-char code on the wire instead of their full name.
+_WORD_FIELD_CODES = {"source": "s", "translation": "t", "example": "e"}
+_WORD_FIELD_CODES_REVERSE = {code: field for field, code in _WORD_FIELD_CODES.items()}
+assert set(_WORD_FIELD_CODES) == set(WORD_FIELDS)
 
-def _editor_overview_screen(lesson_id: int, draft: GeneratedLessonDraft) -> tuple[str, InlineKeyboardMarkup]:
+
+def _editor_overview_screen(lesson_id: int, draft: GeneratedLessonDraft, revision: str) -> tuple[str, InlineKeyboardMarkup]:
     text = "\n".join([
         "✏️ Редактирование черновика",
         "",
@@ -460,9 +512,9 @@ def _editor_overview_screen(lesson_id: int, draft: GeneratedLessonDraft) -> tupl
         f"Упражнения: {len(draft.exercises)}",
     ])
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"📝 Слова — {len(draft.words)}", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX}{lesson_id}:0")],
-        [InlineKeyboardButton(f"📚 Грамматика — {len(draft.grammar)}", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_UNAVAILABLE_PREFIX}{lesson_id}:grammar")],
-        [InlineKeyboardButton(f"🧩 Упражнения — {len(draft.exercises)}", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_UNAVAILABLE_PREFIX}{lesson_id}:exercises")],
+        [InlineKeyboardButton(f"📝 Слова — {len(draft.words)}", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX, lesson_id, revision, 0))],
+        [InlineKeyboardButton(f"📚 Грамматика — {len(draft.grammar)}", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_UNAVAILABLE_PREFIX, lesson_id, revision, "grammar"))],
+        [InlineKeyboardButton(f"🧩 Упражнения — {len(draft.exercises)}", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_UNAVAILABLE_PREFIX, lesson_id, revision, "exercises"))],
         [InlineKeyboardButton("👀 Посмотреть весь черновик", callback_data=f"{TEACHER_AI_DRAFT_PREVIEW_OPEN_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("✅ Сохранить в урок", callback_data=f"{TEACHER_AI_DRAFT_SAVE_PREFIX}{lesson_id}")],
         [InlineKeyboardButton("⬅️ Назад", callback_data=f"{TEACHER_AI_DRAFT_READY_PREFIX}{lesson_id}")],
@@ -470,7 +522,7 @@ def _editor_overview_screen(lesson_id: int, draft: GeneratedLessonDraft) -> tupl
     return text, markup
 
 
-def _words_list_screen(lesson_id: int, draft: GeneratedLessonDraft, page: int) -> tuple[str, InlineKeyboardMarkup]:
+def _words_list_screen(lesson_id: int, draft: GeneratedLessonDraft, page: int, revision: str) -> tuple[str, InlineKeyboardMarkup]:
     total = len(draft.words)
     total_pages = max(1, (total + _WORDS_PER_PAGE - 1) // _WORDS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
@@ -489,22 +541,22 @@ def _words_list_screen(lesson_id: int, draft: GeneratedLessonDraft, page: int) -
         label = f"{index + 1}. {word.source} — {word.translation}"
         if len(label) > 60:
             label = label[:57] + "…"
-        rows.append([InlineKeyboardButton(label, callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_PREFIX}{lesson_id}:{index}")])
+        rows.append([InlineKeyboardButton(label, callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_PREFIX, lesson_id, revision, index))])
 
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX}{lesson_id}:{page - 1}"))
+        nav_row.append(InlineKeyboardButton("⬅️", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX, lesson_id, revision, page - 1)))
     if page + 1 < total_pages:
-        nav_row.append(InlineKeyboardButton("➡️", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX}{lesson_id}:{page + 1}"))
+        nav_row.append(InlineKeyboardButton("➡️", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX, lesson_id, revision, page + 1)))
     if nav_row:
         rows.append(nav_row)
 
-    rows.append([InlineKeyboardButton("➕ Добавить слово", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_ADD_PREFIX}{lesson_id}")])
-    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_OPEN_PREFIX}{lesson_id}")])
+    rows.append([InlineKeyboardButton("➕ Добавить слово", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_ADD_PREFIX, lesson_id, revision))])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_OPEN_PREFIX, lesson_id, revision))])
     return text, InlineKeyboardMarkup(rows)
 
 
-def _word_detail_screen(lesson_id: int, draft: GeneratedLessonDraft, index: int) -> tuple[str, InlineKeyboardMarkup] | None:
+def _word_detail_screen(lesson_id: int, draft: GeneratedLessonDraft, index: int, revision: str) -> tuple[str, InlineKeyboardMarkup] | None:
     if not (0 <= index < len(draft.words)):
         return None
     word = draft.words[index]
@@ -516,29 +568,29 @@ def _word_detail_screen(lesson_id: int, draft: GeneratedLessonDraft, index: int)
         f"Пример: {word.example or '—'}",
     ])
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✏️ Изменить слово", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX}{lesson_id}:{index}:source")],
-        [InlineKeyboardButton("✏️ Изменить перевод", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX}{lesson_id}:{index}:translation")],
-        [InlineKeyboardButton("✏️ Изменить пример", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX}{lesson_id}:{index}:example")],
-        [InlineKeyboardButton("🗑 Удалить", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_PREFIX}{lesson_id}:{index}")],
-        [InlineKeyboardButton("⬅️ К списку", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX}{lesson_id}:0")],
+        [InlineKeyboardButton("✏️ Изменить слово", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX, lesson_id, revision, index, _WORD_FIELD_CODES["source"]))],
+        [InlineKeyboardButton("✏️ Изменить перевод", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX, lesson_id, revision, index, _WORD_FIELD_CODES["translation"]))],
+        [InlineKeyboardButton("✏️ Изменить пример", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX, lesson_id, revision, index, _WORD_FIELD_CODES["example"]))],
+        [InlineKeyboardButton("🗑 Удалить", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_PREFIX, lesson_id, revision, index))],
+        [InlineKeyboardButton("⬅️ К списку", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX, lesson_id, revision, 0))],
     ])
     return text, markup
 
 
-def _word_delete_confirm_screen(lesson_id: int, draft: GeneratedLessonDraft, index: int) -> tuple[str, InlineKeyboardMarkup] | None:
+def _word_delete_confirm_screen(lesson_id: int, draft: GeneratedLessonDraft, index: int, revision: str) -> tuple[str, InlineKeyboardMarkup] | None:
     if not (0 <= index < len(draft.words)):
         return None
     word = draft.words[index]
     text = f"Удалить слово «{word.source} — {word.translation}»?"
     markup = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑 Да, удалить", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_CONFIRM_PREFIX}{lesson_id}:{index}")],
-        [InlineKeyboardButton("⬅️ Отмена", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_WORD_PREFIX}{lesson_id}:{index}")],
+        [InlineKeyboardButton("🗑 Да, удалить", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_CONFIRM_PREFIX, lesson_id, revision, index))],
+        [InlineKeyboardButton("⬅️ Отмена", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_WORD_PREFIX, lesson_id, revision, index))],
     ])
     return text, markup
 
 
-def _editor_input_cancel_markup(lesson_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=f"{TEACHER_AI_DRAFT_EDITOR_CANCEL_INPUT_PREFIX}{lesson_id}")]])
+def _editor_input_cancel_markup(lesson_id: int, revision: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Отмена", callback_data=_editor_callback_data(TEACHER_AI_DRAFT_EDITOR_CANCEL_INPUT_PREFIX, lesson_id, revision))]])
 
 
 async def _begin_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE, lesson_id: int) -> None:
@@ -550,6 +602,7 @@ async def _begin_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE, less
         "exercises_count": None,
         "in_progress": False,
         "draft": None,
+        "draft_revision": None,
         "request": None,
     }
     context.user_data[_ACTIVE_LESSON_KEY] = lesson_id
@@ -600,6 +653,7 @@ async def _run_generation(update: Update, context: ContextTypes.DEFAULT_TYPE, le
             return
 
         state["draft"] = draft
+        state["draft_revision"] = _generate_draft_revision()
         state["request"] = request
         if query is not None:
             text, markup = _ready_screen(lesson_id, draft)
@@ -704,11 +758,18 @@ async def _handle_editor_pending_message(update: Update, context: ContextTypes.D
         return False
 
     lesson_id = pending["lesson_id"]
+    pending_revision = pending.get("revision")
     db: Database = context.application.bot_data["db"]
     summary = _authorize(_lesson_service(db), lesson_id)
     state = _get_state(context, lesson_id)
     draft = state.get("draft") if state is not None else None
     if summary is None or state is None or draft is None:
+        _clear_pending_editor(context)
+        await update.effective_message.reply_text(_EDITOR_STALE_MESSAGE)
+        return True
+    if state.get("draft_revision") != pending_revision:
+        # The draft was regenerated (Draft A -> Draft B) while this text input was
+        # pending; it must not be applied to the new draft under the old word index.
         _clear_pending_editor(context)
         await update.effective_message.reply_text(_EDITOR_STALE_MESSAGE)
         return True
@@ -726,12 +787,12 @@ async def _handle_editor_pending_message(update: Update, context: ContextTypes.D
             await update.effective_message.reply_text(_EDITOR_STALE_MESSAGE)
             return True
         except DraftEditError as exc:
-            await update.effective_message.reply_text(str(exc), reply_markup=_editor_input_cancel_markup(lesson_id))
+            await update.effective_message.reply_text(str(exc), reply_markup=_editor_input_cancel_markup(lesson_id, pending_revision))
             return True
 
         state["draft"] = new_draft
         _clear_pending_editor(context)
-        result = _word_detail_screen(lesson_id, new_draft, index)
+        result = _word_detail_screen(lesson_id, new_draft, index, pending_revision)
         if result is None:
             await update.effective_message.reply_text(_EDITOR_STALE_MESSAGE)
             return True
@@ -747,12 +808,12 @@ async def _handle_editor_pending_message(update: Update, context: ContextTypes.D
             if not value:
                 await update.effective_message.reply_text(
                     "Слово не может быть пустым. Введите слово ещё раз:",
-                    reply_markup=_editor_input_cancel_markup(lesson_id),
+                    reply_markup=_editor_input_cancel_markup(lesson_id, pending_revision),
                 )
                 return True
             pending["source"] = value
             pending["step"] = "translation"
-            await update.effective_message.reply_text("Введите перевод:", reply_markup=_editor_input_cancel_markup(lesson_id))
+            await update.effective_message.reply_text("Введите перевод:", reply_markup=_editor_input_cancel_markup(lesson_id, pending_revision))
             return True
 
         if step == "translation":
@@ -760,14 +821,14 @@ async def _handle_editor_pending_message(update: Update, context: ContextTypes.D
             if not value:
                 await update.effective_message.reply_text(
                     "Перевод не может быть пустым. Введите перевод ещё раз:",
-                    reply_markup=_editor_input_cancel_markup(lesson_id),
+                    reply_markup=_editor_input_cancel_markup(lesson_id, pending_revision),
                 )
                 return True
             pending["translation"] = value
             pending["step"] = "example"
             await update.effective_message.reply_text(
                 "Введите пример (необязательно).\nОтправьте «-», чтобы пропустить.",
-                reply_markup=_editor_input_cancel_markup(lesson_id),
+                reply_markup=_editor_input_cancel_markup(lesson_id, pending_revision),
             )
             return True
 
@@ -776,13 +837,13 @@ async def _handle_editor_pending_message(update: Update, context: ContextTypes.D
             try:
                 new_draft = add_word(draft, source=pending["source"], translation=pending["translation"], example=example)
             except DraftEditError as exc:
-                await update.effective_message.reply_text(str(exc), reply_markup=_editor_input_cancel_markup(lesson_id))
+                await update.effective_message.reply_text(str(exc), reply_markup=_editor_input_cancel_markup(lesson_id, pending_revision))
                 return True
 
             state["draft"] = new_draft
             _clear_pending_editor(context)
             new_index = len(new_draft.words) - 1
-            result = _word_detail_screen(lesson_id, new_draft, new_index)
+            result = _word_detail_screen(lesson_id, new_draft, new_index, pending_revision)
             text, markup = result  # a word we just appended is always a valid index
             await update.effective_message.reply_text("✅ Слово добавлено.\n\n" + text, reply_markup=markup)
             return True
@@ -1057,44 +1118,50 @@ async def handle_teacher_ai_draft_callback(update: Update, context: ContextTypes
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_OPEN_PREFIX):
-        lesson_id = _parse_lesson_id(data, TEACHER_AI_DRAFT_EDITOR_OPEN_PREFIX)
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id) if lesson_id is not None else None
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None:
-            await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id or 0)]]))
+        payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_OPEN_PREFIX).strip()
+        parts = payload.split(":")
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1]:
             return
-        text, markup = _editor_overview_screen(lesson_id, draft)
+        lesson_id = int(parts[0])
+        revision = parts[1]
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
+            await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
+            return
+        text, markup = _editor_overview_screen(lesson_id, draft, revision)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX):
         payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_WORDS_PREFIX).strip()
         parts = payload.split(":")
-        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1] or not parts[2].isdigit():
             return
         lesson_id = int(parts[0])
-        page = int(parts[1])
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id)
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None:
+        revision = parts[1]
+        page = int(parts[2])
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
             await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
-        text, markup = _words_list_screen(lesson_id, draft, page)
+        text, markup = _words_list_screen(lesson_id, draft, page, revision)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_WORD_ADD_PREFIX):
-        lesson_id = _parse_lesson_id(data, TEACHER_AI_DRAFT_EDITOR_WORD_ADD_PREFIX)
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id) if lesson_id is not None else None
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None:
-            await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id or 0)]]))
+        payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_WORD_ADD_PREFIX).strip()
+        parts = payload.split(":")
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1]:
+            return
+        lesson_id = int(parts[0])
+        revision = parts[1]
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
+            await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
         context.user_data[_PENDING_EDITOR_KEY] = {
             "lesson_id": lesson_id,
+            "revision": revision,
             "section": "words",
             "action": "add_word",
             "step": "source",
@@ -1104,45 +1171,44 @@ async def handle_teacher_ai_draft_callback(update: Update, context: ContextTypes
             "translation": None,
         }
         context.user_data["teacher_action"] = _TEACHER_ACTION_EDITOR_INPUT
-        await query.edit_message_text("Введите английское слово:", reply_markup=_editor_input_cancel_markup(lesson_id))
+        await query.edit_message_text("Введите английское слово:", reply_markup=_editor_input_cancel_markup(lesson_id, revision))
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX):
         payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_WORD_EDIT_PREFIX).strip()
         parts = payload.split(":")
-        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit() or parts[2] not in WORD_FIELDS:
+        if len(parts) != 4 or not parts[0].isdigit() or not parts[1] or not parts[2].isdigit() or parts[3] not in _WORD_FIELD_CODES_REVERSE:
             return
         lesson_id = int(parts[0])
-        index = int(parts[1])
-        field = parts[2]
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id)
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None or not (0 <= index < len(draft.words)):
+        revision = parts[1]
+        index = int(parts[2])
+        field = _WORD_FIELD_CODES_REVERSE[parts[3]]
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None or not (0 <= index < len(draft.words)):
             await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
         context.user_data[_PENDING_EDITOR_KEY] = {
             "lesson_id": lesson_id,
+            "revision": revision,
             "section": "words",
             "action": "edit_field",
             "index": index,
             "field": field,
         }
         context.user_data["teacher_action"] = _TEACHER_ACTION_EDITOR_INPUT
-        await query.edit_message_text(_WORD_FIELD_PROMPTS[field], reply_markup=_editor_input_cancel_markup(lesson_id))
+        await query.edit_message_text(_WORD_FIELD_PROMPTS[field], reply_markup=_editor_input_cancel_markup(lesson_id, revision))
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_CONFIRM_PREFIX):
         payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_CONFIRM_PREFIX).strip()
         parts = payload.split(":")
-        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1] or not parts[2].isdigit():
             return
         lesson_id = int(parts[0])
-        index = int(parts[1])
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id)
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None:
+        revision = parts[1]
+        index = int(parts[2])
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
             await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
         try:
@@ -1150,27 +1216,27 @@ async def handle_teacher_ai_draft_callback(update: Update, context: ContextTypes
         except DraftEditIndexError:
             await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
+        state = _get_state(context, lesson_id)
         state["draft"] = new_draft
-        text, markup = _words_list_screen(lesson_id, new_draft, 0)
+        text, markup = _words_list_screen(lesson_id, new_draft, 0, revision)
         await query.edit_message_text("✅ Слово удалено.\n\n" + text, reply_markup=markup)
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_PREFIX):
         payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_WORD_DELETE_PREFIX).strip()
         parts = payload.split(":")
-        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1] or not parts[2].isdigit():
             return
         lesson_id = int(parts[0])
-        index = int(parts[1])
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id)
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None:
+        revision = parts[1]
+        index = int(parts[2])
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
             await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
-        result = _word_delete_confirm_screen(lesson_id, draft, index)
+        result = _word_delete_confirm_screen(lesson_id, draft, index, revision)
         if result is None:
-            text, markup = _words_list_screen(lesson_id, draft, 0)
+            text, markup = _words_list_screen(lesson_id, draft, 0, revision)
             await query.edit_message_text(text, reply_markup=markup)
             return
         text, markup = result
@@ -1180,19 +1246,18 @@ async def handle_teacher_ai_draft_callback(update: Update, context: ContextTypes
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_WORD_PREFIX):
         payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_WORD_PREFIX).strip()
         parts = payload.split(":")
-        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1] or not parts[2].isdigit():
             return
         lesson_id = int(parts[0])
-        index = int(parts[1])
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id)
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None:
+        revision = parts[1]
+        index = int(parts[2])
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
             await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
-        result = _word_detail_screen(lesson_id, draft, index)
+        result = _word_detail_screen(lesson_id, draft, index, revision)
         if result is None:
-            text, markup = _words_list_screen(lesson_id, draft, 0)
+            text, markup = _words_list_screen(lesson_id, draft, 0, revision)
             await query.edit_message_text(text, reply_markup=markup)
             return
         text, markup = result
@@ -1200,28 +1265,44 @@ async def handle_teacher_ai_draft_callback(update: Update, context: ContextTypes
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_CANCEL_INPUT_PREFIX):
-        lesson_id = _parse_lesson_id(data, TEACHER_AI_DRAFT_EDITOR_CANCEL_INPUT_PREFIX)
+        payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_CANCEL_INPUT_PREFIX).strip()
+        parts = payload.split(":")
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1]:
+            return
+        lesson_id = int(parts[0])
+        revision = parts[1]
         pending = context.user_data.get(_PENDING_EDITOR_KEY)
         pending_belongs = pending is not None and pending.get("lesson_id") == lesson_id
         pending_action = pending.get("action") if pending_belongs else None
         pending_index = pending.get("index") if pending_belongs else None
-        _clear_pending_editor(context)
-        summary = _authorize(service, lesson_id)
-        state = _get_state(context, lesson_id) if lesson_id is not None else None
-        draft = state.get("draft") if state is not None else None
-        if summary is None or state is None or draft is None:
-            await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id or 0)]]))
+        # On a stale revision, _resolve_editor_action clears `pending` itself (only if
+        # it belongs to that same stale revision) and returns None below.
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
+            await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
             return
+        if pending_belongs:
+            _clear_pending_editor(context)
         if pending_action == "edit_field" and pending_index is not None:
-            result = _word_detail_screen(lesson_id, draft, pending_index)
+            result = _word_detail_screen(lesson_id, draft, pending_index, revision)
             if result is not None:
                 text, markup = result
                 await query.edit_message_text(text, reply_markup=markup)
                 return
-        text, markup = _words_list_screen(lesson_id, draft, 0)
+        text, markup = _words_list_screen(lesson_id, draft, 0, revision)
         await query.edit_message_text(text, reply_markup=markup)
         return
 
     if data.startswith(TEACHER_AI_DRAFT_EDITOR_UNAVAILABLE_PREFIX):
+        payload = data.removeprefix(TEACHER_AI_DRAFT_EDITOR_UNAVAILABLE_PREFIX).strip()
+        parts = payload.split(":")
+        if len(parts) != 3 or not parts[0].isdigit() or not parts[1]:
+            return
+        lesson_id = int(parts[0])
+        revision = parts[1]
+        draft = _resolve_editor_action(context, service, lesson_id, revision)
+        if draft is None:
+            await query.edit_message_text(_EDITOR_STALE_MESSAGE, reply_markup=InlineKeyboardMarkup([[_back_to_lesson_button(lesson_id)]]))
+            return
         await query.answer(_EDITOR_UNAVAILABLE_MESSAGE, show_alert=True)
         return
